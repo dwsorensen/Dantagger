@@ -15,7 +15,8 @@ original file is in `docs/copied_sha256.txt` (taken before any change).
 
 | Here | Source | Changes |
 |---|---|---|
-| `host/include/au2ft601/*`, `host/include/tdcctl/*`, `host/src/*` (incl. `tdcctl_main.cpp`) | `host/include`, `host/src` | unchanged, except `host/include/tdcctl/fake_fpga.hpp` |
+| `host/include/au2ft601/*`, `host/include/tdcctl/*`, `host/src/*` (incl. `tdcctl_main.cpp`) | `host/include`, `host/src` | unchanged, except `host/include/tdcctl/fake_fpga.hpp` and `tdc_session.*` (below) |
+| `host/include/tdcctl/tdc_session.hpp`, `host/src/tdc_session.cpp` | the same | `Session::stream_batches`: the sink is called once per validated DATA frame; the per-record bookkeeping tests the marker bit and decodes markers only. `stream()` keeps its per-record sink on top of it. |
 | `host/include/tdcctl/fake_fpga.hpp` | `host/include/tdcctl/fake_fpga.hpp` (release 2) | SDE/Dantagger's changes to its release-1 copy merged in, in terms of the image's coarse tick: programmable `event_source` (true GPX2 times), `gpx_ppm` drift, `latency_ps` + `latency_jitter_ps` with completion-order records and in-flight carry-over, configured widths and REFCLK divisions, `drop_every` with OVERFLOW markers. The default (Poisson at `event_rate_hz`) is kept; TDC_Firmware's 146 host checks pass with it. |
 | `host/tests/tdc_tests.cpp`, `rtl_frames.cpp`, `make_comb_run.py` | `host/tests` | unchanged |
 | `app/_orig` (removed before the first commit) | `host/app` | reference while porting; the new app is in `app/` |

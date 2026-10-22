@@ -23,6 +23,7 @@
 #include <functional>
 #include <thread>
 #include <map>
+#include <mutex>
 #include <random>
 #include <string>
 #include <vector>
@@ -181,10 +182,12 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
     fake.latency_jitter_ps = jitter_ps;
     fake.drop_every = drop_every;
     Truth truth;
+    std::mutex truth_mu;   // the source runs on the receiving thread
     std::mt19937_64 rng(7);
     std::uint64_t silent_from = 0;
     bool silenced = false;
     fake.event_source = [&](std::uint64_t t0, std::uint64_t t1, std::vector<std::pair<std::uint64_t, int>>& out) {
+        std::lock_guard<std::mutex> lock(truth_mu);
         if (silent_from == 0) silent_from = t0 + 3'000'000'000;   // 3 ms of events, then (optionally) silence
         for (int c = 0; c < kNumChannels; ++c) {
             std::exponential_distribution<double> gap(rate_hz * 1e-12);
@@ -219,7 +222,12 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
     std::vector<std::int32_t> chans;
     std::size_t specials = 0;
     const auto got = run_stream(tagger, duration, &chans, &specials);
-    // Truth: per channel the events seen (some may be dropped / in flight at the run end).
+    {   // Truth: per channel the events seen (some may be dropped / in flight at the run end).
+        std::lock_guard<std::mutex> lock(truth_mu);
+        Truth copy = truth;
+        truth = std::move(copy);
+    }
+    tagger.close();   // the source stops with the run
     std::sort(truth.events.begin(), truth.events.end());
     std::printf("  %-34s %zu events (truth %zu), %zu markers\n", name, got.size(), truth.events.size(), specials);
     CHECK(!got.empty());
@@ -252,7 +260,6 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
         CHECK(specials > 0);
         CHECK(tagger.log().dropped() > 0);
     }
-    tagger.close();
     std::filesystem::remove_all(dir);
 }
 

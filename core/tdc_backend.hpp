@@ -35,6 +35,8 @@
 
 #include "tdcctl/tdc_protocol.hpp"
 
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -52,6 +54,25 @@ class FakeFpga;
 namespace dt {
 
 enum class SetupMode { automatic, none };
+
+// Blocks of raw records from the receiving thread to the decoding thread;
+// push() waits while more than the budget is queued, pop() returns false once
+// closed and empty.
+class RecordQueue {
+public:
+    explicit RecordQueue(std::size_t budget_bytes);
+    void push(std::vector<std::uint64_t>&& block);
+    bool pop(std::vector<std::uint64_t>& block);
+    void close();
+
+private:
+    std::mutex mu_;
+    std::condition_variable ready_, space_;
+    std::deque<std::vector<std::uint64_t>> blocks_;
+    std::size_t bytes_{0}, peak_{0}, budget_;
+    bool closed_{false};
+};
+constexpr std::size_t kRecordQueueBytes = 256u << 20;
 
 struct TdcOptions {
     std::string serial;            // empty: the only FT601 attached

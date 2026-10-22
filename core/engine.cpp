@@ -76,6 +76,7 @@ void Engine::configure(const std::array<timestamp_t, kNumChannels>& delays,
 }
 
 void Engine::loop() {
+    set_thread_name("dt-engine");
     while (true) {
         RawChunk chunk;
         {

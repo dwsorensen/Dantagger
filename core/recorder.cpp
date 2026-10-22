@@ -142,6 +142,7 @@ void StreamRecorder::run_ended(const RunEnd& end) {
 }
 
 void StreamRecorder::writer() {
+    set_thread_name("dt-recorder");
     std::vector<std::uint64_t> batch;
     std::vector<char> bytes;
     while (true) {

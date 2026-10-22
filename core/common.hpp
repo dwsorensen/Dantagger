@@ -4,6 +4,8 @@
 // monotonic timeline per open board (int64, as Swabian's timestamp_t).
 // Channels are 1..4 (STOP1..STOP4); inside the core they are int8.
 
+#include <pthread.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -85,6 +87,10 @@ class DeviceError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+// Names the calling thread (shown by top -H, ps -L; at most 15 characters):
+// dt-receive, dt-decode, dt-engine, dt-recorder, dt-worker.
+inline void set_thread_name(const char* name) { pthread_setname_np(pthread_self(), name); }
 
 inline void check_channel(int channel) {
     if (channel < 1 || channel > kNumChannels)

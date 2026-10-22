@@ -144,6 +144,19 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   frame: a lone response still completes its transfer, no low-rate delay).
   `build/usb_bench` compares settings on the board. **Not yet measured on the
   board.**
+- **Three threads per board (2026-10-22, user: "one thread receiving data
+  and the other processing it").** `TdcBackend::run`: `dt-receive` only reads
+  USB and checks frames (`Session::stream_batches`, one call per DATA frame)
+  and hands each read's records to `dt-decode` through a 256 MB
+  `RecordQueue`; `dt-decode` runs the taps (rate bar, recorder) and the record
+  decoder and pushes chunks to the engine; `dt-engine` merges and measures.
+  Threads are named (`top -H`). ThreadSanitizer: clean (run with `setarch
+  $(uname -m) -R`, this kernel's ASLR otherwise breaks TSan). Board, live
+  inputs, 2026-10-22: **23.35 M tags/s for 6 s, 0 dropped**; receive 56 %,
+  decode 49 %, engine 61 % of a core (the single-thread design dropped at
+  12.6 M/s). Link ceiling measured with `usb_bench`: ~28 M records/s
+  (~225 MB/s, test pattern; 58 M pattern events, 0 wrong). Next limit: the
+  engine thread (~35-38 M/s estimated).
 
 ## Status (2026-10-22)
 
@@ -211,6 +224,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   settings, saved streams, self-test), docs. All tests pass. First commit.
 - 2026-10-22: App icon from `icon.png` (embedded by build.py; all windows).
   Y axes with a 5 % margin around the data; calibration plot no longer capped.
+- 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board- 2026-10-22: Receive / decode / engine threads (board: 23.35 M tags/s, 0
+  dropped); `Session::stream_batches`; thread names; TSan clean.
 - 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board (user's app
   session, 12:50). FPGA overflows under a saturated PC: more USB transfers in
   flight and a larger library queue; `tools/usb_bench.cpp`.

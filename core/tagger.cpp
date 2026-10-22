@@ -42,6 +42,7 @@ void Tagger::close() {
 }
 
 void Tagger::device_loop() {
+    set_thread_name("dt-receive");   // runs the backend: receives the board's data
     std::unique_lock<std::mutex> lock(dev_mu_);
     while (!quit_) {
         if (pause_ || !engine_->demand_fast()) {

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <pthread.h>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -117,6 +119,40 @@ bool calibrated_per_cache(const tdcctl::Response& st, const LvdsCache& cache) {
 int resolution_factor(int code) { return code == 1 ? 2 : code == 2 ? 4 : 1; }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// The receive -> decode queue: blocks of raw records, bounded in bytes.
+// ---------------------------------------------------------------------------
+RecordQueue::RecordQueue(std::size_t budget_bytes) : budget_(budget_bytes) {}
+
+void RecordQueue::push(std::vector<std::uint64_t>&& block) {
+    const std::size_t bytes = block.size() * sizeof(std::uint64_t);
+    std::unique_lock<std::mutex> lock(mu_);
+    space_.wait(lock, [&] { return closed_ || bytes_ < budget_ || blocks_.empty(); });
+    if (closed_) return;
+    bytes_ += bytes;
+    peak_ = std::max(peak_, bytes_);
+    blocks_.push_back(std::move(block));
+    ready_.notify_one();
+}
+
+bool RecordQueue::pop(std::vector<std::uint64_t>& block) {
+    std::unique_lock<std::mutex> lock(mu_);
+    ready_.wait(lock, [&] { return closed_ || !blocks_.empty(); });
+    if (blocks_.empty()) return false;   // closed and drained
+    block = std::move(blocks_.front());
+    blocks_.pop_front();
+    bytes_ -= block.size() * sizeof(std::uint64_t);
+    space_.notify_one();
+    return true;
+}
+
+void RecordQueue::close() {
+    std::lock_guard<std::mutex> lock(mu_);
+    closed_ = true;
+    ready_.notify_all();
+    space_.notify_all();
+}
 
 // ---------------------------------------------------------------------------
 // Frame policy and descriptions
@@ -559,58 +595,90 @@ void TdcBackend::run(Engine& engine, const std::function<bool()>& should_stop) {
 
     tdcctl::LclkinScope lclk(*session_, true);
     decoder_.begin_run();
-    RawChunk chunk;
-    std::size_t chunk_events = 0;
-    std::uint64_t last_push_coarse = 0;
     const auto dropped_before = decoder_.stats().dropped;
     const std::uint64_t push_ticks = static_cast<std::uint64_t>(1e6 / st.lvds.timing.coarse_tick_ns);   // 1 ms
-    std::atomic<bool> have_taps{false};
-    auto push = [&] {
-        chunk.watermark = decoder_.watermark();
-        engine.push(std::move(chunk));
-        chunk = RawChunk{};
-        chunk.watermark = decoder_.watermark();
-        chunk_events = 0;
-        last_push_coarse = decoder_.coarse();
+
+    // Two threads (user, 2026-10-22): this one only receives (USB reads, frame
+    // checks) and hands each read's records to the decode thread, which runs
+    // the taps, the record decoder and the chunks for the engine (whose own
+    // thread merges and measures).  A slow decoder fills the queue first; only
+    // a full queue (256 MB) makes the receiver wait.
+    RecordQueue queue(kRecordQueueBytes);
+    std::atomic<bool> decode_failed{false};
+    std::string decode_error;
+    std::thread decode_thread([&] {
+        set_thread_name("dt-decode");
+        RawChunk chunk;
+        std::size_t chunk_events = 0;
+        std::uint64_t last_push_coarse = 0;
+        bool have_taps = false;
+        auto push = [&] {
+            chunk.watermark = decoder_.watermark();
+            engine.push(std::move(chunk));
+            chunk = RawChunk{};
+            chunk.watermark = decoder_.watermark();
+            chunk_events = 0;
+            last_push_coarse = decoder_.coarse();
+            {
+                std::lock_guard<std::mutex> lock(tap_mu_);
+                have_taps = !taps_.empty();
+            }
+            if (!tap_buf_.empty()) flush_taps(false);
+        };
         {
             std::lock_guard<std::mutex> lock(tap_mu_);
-            have_taps.store(!taps_.empty());
+            have_taps = !taps_.empty();
         }
-        if (!tap_buf_.empty()) flush_taps(false);
-    };
-    {
-        std::lock_guard<std::mutex> lock(tap_mu_);
-        have_taps.store(!taps_.empty());
-    }
-    std::string decode_error;
-    auto sink = [&](std::uint64_t raw) {
-        if (!decode_error.empty()) return;
-        if (have_taps.load(std::memory_order_relaxed)) {
-            if (tap_buf_.empty()) tap_buf_coarse_ = decoder_.coarse();
-            tap_buf_.push_back(raw);
+        std::vector<std::uint64_t> block;
+        while (queue.pop(block)) {
+            if (decode_failed.load(std::memory_order_relaxed)) continue;   // drain: the receiver is stopping the run
+            for (const std::uint64_t raw : block) {
+                if (have_taps) {
+                    if (tap_buf_.empty()) tap_buf_coarse_ = decoder_.coarse();
+                    tap_buf_.push_back(raw);
+                }
+                const auto before = decoder_.stats().events;
+                try {
+                    decoder_.feed(raw, chunk);
+                } catch (const std::exception& e) {
+                    decode_error = e.what();
+                    decode_failed.store(true);
+                    break;
+                }
+                chunk_events += decoder_.stats().events - before;
+                if (chunk.run_begin || chunk_events >= 32768 || decoder_.coarse() - last_push_coarse >= push_ticks) push();
+            }
         }
-        const auto before = decoder_.stats().events;
-        try {
-            decoder_.feed(raw, chunk);
-        } catch (const std::exception& e) {
-            decode_error = e.what();
-            return;
+        if (decoder_.run_started()) {
+            chunk.run_end = true;
+            chunk.watermark = decoder_.watermark();
+            engine.push(std::move(chunk));
         }
-        chunk_events += decoder_.stats().events - before;
-        if (chunk.run_begin || chunk_events >= 32768 || decoder_.coarse() - last_push_coarse >= push_ticks) push();
-    };
+        flush_taps(true);
+    });
+
+    std::vector<std::uint64_t> block;
+    auto sink = [&](const std::uint64_t* raw, std::size_t n) { block.insert(block.end(), raw, raw + n); };
     std::atomic<bool> abort{false};
-    auto progress = [&](const tdcctl::StreamProgress&) {
-        if (should_stop() || !decode_error.empty()) abort.store(true);
+    auto progress = [&](const tdcctl::StreamProgress&) {   // after every USB read
+        if (!block.empty()) {
+            queue.push(std::move(block));
+            block = {};
+        }
+        if (should_stop() || decode_failed.load()) abort.store(true);
     };
     tdcctl::StreamRequest request;
-    const auto result = session_->stream(request, sink, progress, &abort);
-    if (decoder_.run_started()) {
-        chunk.run_end = true;
-        chunk.watermark = decoder_.watermark();
-        engine.push(std::move(chunk));
+    tdcctl::StreamResult result;
+    try {
+        result = session_->stream_batches(request, sink, progress, &abort);
+    } catch (...) {
+        queue.close();
+        decode_thread.join();
+        throw;
     }
-    flush_taps(true);
+    if (!block.empty()) queue.push(std::move(block));
+    queue.close();
+    decode_thread.join();
     RunEnd end;
     end.pass = result.pass;
     end.failure = result.failure;

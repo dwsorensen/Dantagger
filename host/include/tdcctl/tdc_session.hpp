@@ -97,6 +97,9 @@ struct StreamResult {
 
 // Called with every record of the run, in order (markers included).
 using RecordSink = std::function<void(std::uint64_t raw)>;
+// The same, a validated DATA frame's records at a time (one call per frame
+// instead of one per record: the receiving thread stays cheap).
+using RecordBatchSink = std::function<void(const std::uint64_t* raw, std::size_t n)>;
 using StreamProgressCallback = std::function<void(const StreamProgress&)>;
 
 // ---- Calibration ----------------------------------------------------------------
@@ -166,6 +169,8 @@ public:
     // in the result).  `abort` may be set from another thread to send STOP.
     StreamResult stream(const StreamRequest& request, const RecordSink& sink,
                         const StreamProgressCallback& progress = {}, const std::atomic<bool>* abort = nullptr);
+    StreamResult stream_batches(const StreamRequest& request, const RecordBatchSink& sink,
+                                const StreamProgressCallback& progress = {}, const std::atomic<bool>* abort = nullptr);
 
     // Calibration (PROTOCOL.md 2.3): configures the GPX2 with `config` plus
     // the test pattern, enables LCLKIN, sweeps the sampling phase with

@@ -134,6 +134,7 @@ bool Device::submit(const std::string& label, Job job, bool needs_connection) {
 }
 
 void Device::worker() {
+    dt::set_thread_name("dt-worker");
     auto last_poll = std::chrono::steady_clock::now();
     while (true) {
         std::pair<std::string, Job> job;

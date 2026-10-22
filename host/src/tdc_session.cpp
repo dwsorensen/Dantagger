@@ -247,6 +247,17 @@ Response Session::link_test(std::uint32_t window_cycles) {
 // ---------------------------------------------------------------------------
 StreamResult Session::stream(const StreamRequest& request, const RecordSink& sink,
                              const StreamProgressCallback& progress, const std::atomic<bool>* abort) {
+    if (!sink) return stream_batches(request, {}, progress, abort);
+    return stream_batches(
+        request,
+        [&sink](const std::uint64_t* raw, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) sink(raw[i]);
+        },
+        progress, abort);
+}
+
+StreamResult Session::stream_batches(const StreamRequest& request, const RecordBatchSink& sink,
+                                     const StreamProgressCallback& progress, const std::atomic<bool>* abort) {
     StreamResult result;
     result.run_id = (random_u64() >> 1U) | 1U;
     const auto start_txn = next_transaction();
@@ -269,30 +280,38 @@ StreamResult Session::stream(const StreamRequest& request, const RecordSink& sin
     const bool pipelined = depth > 0;
     result.pipeline_depth = depth;
 
-    auto handle_record = [&](std::uint64_t raw) {
-        const auto r = decode_record(raw);
+    // Bookkeeping per record (events: a bit test and a count; markers decoded);
+    // false if the run's record rules are broken.
+    auto check_record = [&](std::uint64_t raw) {
         if (end_seen) {
             fail("record after the END marker");
-            return;
+            return false;
         }
-        if (!start_seen) {
-            if (!r.marker || r.marker_type != MarkerType::start) {
+        if ((raw >> 63U) == 0) {   // event
+            if (!start_seen) {
                 fail("the first record of the run is not a START marker");
-                return;
+                return false;
+            }
+            ++result.events[static_cast<std::size_t>((raw >> 61U) & 3U)];
+            return true;
+        }
+        const auto r = decode_record(raw);
+        if (!start_seen) {
+            if (r.marker_type != MarkerType::start) {
+                fail("the first record of the run is not a START marker");
+                return false;
             }
             start_seen = true;
-        } else if (r.marker && r.marker_type == MarkerType::start) {
+        } else if (r.marker_type == MarkerType::start) {
             fail("START marker inside the run");
-            return;
+            return false;
         }
-        if (r.marker && r.marker_type == MarkerType::end) {
+        if (r.marker_type == MarkerType::end) {
             end_seen = true;
             result.by_window = (r.info & 1U) != 0;
         }
-        if (r.marker && r.marker_type == MarkerType::overflow) result.dropped_marked += r.info;
-        if (!r.marker) ++result.events[static_cast<std::size_t>(r.channel)];
-        ++result.records;
-        if (sink) sink(raw);
+        if (r.marker_type == MarkerType::overflow) result.dropped_marked += r.info;
+        return true;
     };
 
     try {
@@ -382,7 +401,10 @@ StreamResult Session::stream(const StreamRequest& request, const RecordSink& sin
                         break;
                     }
                     ++result.frames;
-                    for (auto raw : data->records) handle_record(raw);
+                    std::size_t good = 0;
+                    while (good < data->records.size() && check_record(data->records[good])) ++good;
+                    result.records += good;
+                    if (sink && good) sink(data->records.data(), good);
                     continue;
                 }
                 fail("unexpected frame type during the run");
