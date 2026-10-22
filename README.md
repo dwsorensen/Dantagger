@@ -53,18 +53,24 @@ build/app/dantagger --simulate   # a simulated board: 1 MHz laser on ch 4, detec
 
 **Board.** Connecting changes nothing on the board. The sidebar and the
 *TDC-GPX2 & LVDS* page show the firmware release and the capture format
-(e.g. *Release 2 (design 0x54440002) · 6 + 18-bit frames (24 bits), DDR at
-LCLKIN 250 MHz: at most 20.83 M events/s per channel*). If the board is not
+(e.g. *Release 2 (design 0x54440002) · 24 + 18-bit frames (42 bits), DDR at
+LCLKIN 250 MHz: at most 11.90 M events/s per channel*). If the board is not
 configured and calibrated (after a power cycle), **Set up the board** does
 what the Python library does on its first open: GPX2 configuration with the
 frame policy, LVDS calibration, recorded in the same state file, so scripts
 started later skip their setup. The manual GPX2 configuration, link test,
 phase and LCLKIN controls of the TDC Control app are on the same page.
 
-**Frame policy.** Release 2: DDR, the shortest stop width for a 1 ps LSB and
-the shortest reference index that keeps times unambiguous at full LCLKIN
-(6 + 18 bits at 250 MHz). Release 1: SDR, 24 + 20 bits. Python uses the same
-(`DANTAGGER_FRAME=REF,STOP` or `frame=` overrides it there).
+**Frame policy.** Release 2: a 24-bit reference index and 18 stop bits (1 ps
+LSB), DDR: 11.9 M events/s per channel at 250 MHz, and a 2.1 s index wrap,
+so times unwrap safely at any count rate. Release 1: SDR, 24 + 20 bits.
+Python uses the same (`DANTAGGER_FRAME=REF,STOP` or `frame=` overrides it
+there). The setup calibrates at the LCLKIN rate and data rate (SDR/DDR) of
+the last successful calibration: a fallback chosen once on the TDC page (if
+250 MHz DDR does not work on the board) stays in use, also after power
+cycles and in Python. Each release has its own calibration state file
+(`~/.local/state/dantagger/<serial>.json` for release 1, as SDE/Dantagger;
+`<serial>.release2.json`), so switching releases loses neither.
 
 **Channels (shared, persistent).** Trigger level, hysteresis, input delay and
 dead time per channel are shared by every measurement and saved for the next
@@ -156,7 +162,8 @@ README; `docs/SWABIAN_API_USAGE.md`, `docs/GAMEPLAN.md`), with these changes
   defaults (0.010 V, 1000 Ω). The first open after power-up still configures
   the GPX2 and calibrates.
 - **Both firmware releases**, with the frame policy above (release 1 now
-  24 + 20 bits, the format proven on the board; it was 16 + 18).
+  24 + 20 bits, the format proven on the board; it was 16 + 18; release 2
+  24 + 18).
 - `startFor(d)` now always covers exactly `d` of captured tag time: if the
   board's run restarts inside the window (a run that was still ending when
   the window began, or an autostarted measurement's settings change), the
@@ -173,13 +180,12 @@ point at *this* package. The SDE venv's switch still points at
 Nothing in this package has run on the board yet. `SDE/Dantagger` never did;
 release 2 has not been loaded. What is tested: the whole path against the
 simulated FPGA of both releases (calibration, frames, decoding with ±95 ppm
-clock drift and latency jitter, drops), the app's self-test, and the
-measurements bit-exact against the Swabian library. For a first session:
+clock drift and latency jitter, drops, fallback calibrations), the app's
+self-test, and the measurements bit-exact against the Swabian library.
 
-```sh
-build/app/dantagger --snapshot /tmp/dt-snap     # connect (STOP + STATUS only), screenshots of Comparator and TDC pages
-build/app/dantagger                             # Set up the board, then a Countrate panel
-```
+**Release 2 bring-up: `docs/HARDWARE_TEST_R2.md`.** For a quick look at a
+board: `build/app/dantagger --snapshot DIR` (connects: STOP, STATUS, LCLKIN
+off if on; screenshots of the Comparator and TDC pages).
 
 ## Files
 
@@ -194,5 +200,5 @@ build/app/dantagger                             # Set up the board, then a Count
 | `bench/` | benchmarks |
 | `switch/`, `tools/` | the `import TimeTagger` switch and its installer; the Swabian usage scanner |
 | `third_party/` | FTDI D3XX 1.1.8, pybind11 3.1.0, Dear ImGui 1.90.9-docking, ImPlot 0.16, GLFW 3.4, portable-file-dialogs 0.1.0 |
-| `docs/` | `PROTOCOL.md` (firmware), provenance, the SDE Dantagger plan and API scan |
+| `docs/` | `HARDWARE_TEST_R2.md` (release 2 bring-up), `PROTOCOL.md` (firmware), provenance, the SDE Dantagger plan and API scan |
 | `data/` | saved tag streams and exports (not in git) |

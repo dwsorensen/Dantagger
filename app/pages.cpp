@@ -95,9 +95,9 @@ void board_setup_card(AppContext& ctx) {
                  v.policy_text.c_str());
     ImGui::PopTextWrapPos();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Release 2: DDR, the shortest stop width for a 1 ps LSB and the shortest reference index that\n"
-                          "keeps times unambiguous at full LCLKIN. Release 1: SDR, 24 + 20 bits. The Python library\n"
-                          "applies the same configuration.");
+        ImGui::SetTooltip("Release 2: 24-bit reference index + 18 stop bits (1 ps LSB), DDR unless the last calibration\n"
+                          "was made in SDR; the setup calibrates at the LCLKIN of the last calibration (a fallback rate\n"
+                          "chosen below stays chosen). Release 1: SDR, 24 + 20 bits. The Python library applies the same.");
     ImGui::TextUnformatted("State");
     ImGui::SameLine(110);
     ui::status_dot(ImGui::GetColorU32(v.set_up ? ui::c_ok() : ui::c_warn()), 5);
@@ -111,8 +111,9 @@ void board_setup_card(AppContext& ctx) {
     if (ImGui::Button("Recalibrate")) ctx.dev.setup(true);
     if (lock) ImGui::EndDisabled();
     ui::help("Set up = what the Python library does on its first open after power-up: configure the TDC-GPX2 with the "
-             "frame policy and calibrate the LVDS sampling point with the test pattern (about 1-2 s), skipping the "
-             "calibration if the board is still calibrated. The result is recorded in the same state file, so a Python "
+             "frame policy and calibrate the LVDS sampling point with the test pattern (about 1-2 s) at the LCLKIN rate of "
+             "the last calibration, skipping the calibration if the board is still calibrated. To use a lower LCLKIN "
+             "(release-2 fallback), pick it under LVDS link below and Calibrate there once. The result is recorded in the same state file, so a Python "
              "script started later skips its setup. Measurements must be stopped.");
     ui::card_end();
 }
@@ -264,6 +265,7 @@ void page_tdc(AppContext& ctx, PagesState& s) {
         for (int i = 0; i < 8; ++i)
             if (kRefBitsVal[i] == tdcctl::gpx_ref_index_bits(w[2])) s.ref_bits_idx = i;
         s.stop_bits_idx = std::clamp((tdcctl::gpx_stop_bits(w[2]) - 14) / 2, 0, 3);
+        s.divider = r->lvds.divider_code();
         s.synced_from_board = true;
     }
 
@@ -430,8 +432,9 @@ void page_tdc(AppContext& ctx, PagesState& s) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(110);
         divider_combo("##lclk", &s.divider, timing);
-        ui::help("The rate calibration, counts and runs use. Fall back to a lower rate if 250 MHz does not calibrate; "
-                 "configure the GPX2 again afterwards (the reference index needed depends on it).");
+        ui::help("The rate calibration, counts and runs use. Fall back to a lower rate (or SDR, GPX2 configuration above) "
+                 "if 250 MHz DDR does not calibrate: Calibrate here once; \"Set up the board\" and the Python library then "
+                 "keep that rate and data rate.");
         ImGui::SameLine(0, 20);
         if (ui::accent_button("Calibrate")) {
             try {

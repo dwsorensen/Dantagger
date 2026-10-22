@@ -13,6 +13,7 @@
 #include "tdc_backend.hpp"
 
 #include "tdcctl/fake_fpga.hpp"
+#include "tdcctl/tdc_session.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -166,8 +167,9 @@ static std::vector<timestamp_t> run_stream(Tagger& tagger, timestamp_t duration,
     return out;
 }
 
-// ref_bits 0: the frame policy of the release (release 2: 6 + 18 bits DDR at
-// 250 MHz, an 8 us reference-index wrap; release 1: 24 + 20 bits SDR).
+// ref_bits 0: the frame policy of the release (release 2: 24 + 18 bits DDR;
+// release 1: 24 + 20 bits SDR).  ref_bits 6 on release 2: the shortest frame
+// at 250 MHz DDR (6 + 18, an 8 us reference-index wrap).
 static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t jitter_ps, double rate_hz,
                     timestamp_t silence_ps, std::uint64_t drop_every, bool release1 = false) {
     const auto dir = std::filesystem::temp_directory_path() / ("dantagger_test_state_" + std::to_string(getpid()));
@@ -208,7 +210,7 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
     {
         auto& b = static_cast<TdcBackend&>(tagger.backend());
         const auto st = b.last_status();
-        const int want_ref = ref_bits != 0 ? ref_bits : release1 ? 24 : 6;
+        const int want_ref = ref_bits != 0 ? ref_bits : 24;
         CHECK(st.lvds.ref_bits == want_ref);
         CHECK(st.lvds.ddr == !release1);
         CHECK(st.design_version == (release1 ? tdcctl::kDesignVersionR1 : tdcctl::kDesignVersionR2));
@@ -241,7 +243,7 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
         std::printf("    offset changes %zu, channels matching %zu of %zu\n", changes, channel_ok, n);
         CHECK(channel_ok == n);
         CHECK(n == got.size());
-        const bool short_wrap = ref_bits == 0 && !release1;   // 8 us: a long silence may re-anchor once
+        const bool short_wrap = ref_bits == 6;   // 8 us: a long silence may re-anchor once
         if (silence_ps == 0 || (!short_wrap && (ref_bits == 24 || ref_bits == 0 || silence_ps < 10'000'000'000'000)))
             CHECK(changes == 0);
         else
@@ -262,13 +264,17 @@ static void test_hardware_path() {
     hw_case("16-bit index, 2 s silence, -60 ppm", 16, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
     hw_case("16-bit index, 30 s silence, +100 ppm", 16, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0);
     hw_case("FPGA drops every 9th event", 16, 0.0, 0, 200000, 0, 9);
-    // Release 2 frame policy: 6-bit reference index (8 us wrap), 250 MHz DDR, 8 ns coarse ticks.
-    hw_case("R2 policy (6+18), no drift", 0, 0.0, 0, 50000, 0, 0);
-    hw_case("R2 policy, +95 ppm, 1.2 us jitter", 0, 95.0, 1'200'000, 50000, 0, 0);
+    // Release 2 frame policy: 24 + 18 bits, 250 MHz DDR, 8 ns coarse ticks.
+    hw_case("R2 policy (24+18), no drift", 0, 0.0, 0, 50000, 0, 0);
     hw_case("R2 policy, -95 ppm, 1 MHz/ch, 1 us jitter", 0, -95.0, 1'000'000, 1e6, 0, 0);
-    hw_case("R2 policy, 2 kHz/ch, +60 ppm", 0, 60.0, 500'000, 2000, 0, 0);
-    hw_case("R2 policy, 2 s silence, -60 ppm", 0, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
+    hw_case("R2 policy, 30 s silence, +100 ppm", 0, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0);
     hw_case("R2 policy, FPGA drops every 7th", 0, 0.0, 0, 200000, 0, 7);
+    // Release 2 shortest frame (6 + 18, an 8 us wrap; still allowed as an override).
+    hw_case("R2 6+18, no drift", 6, 0.0, 0, 50000, 0, 0);
+    hw_case("R2 6+18, +95 ppm, 1.2 us jitter", 6, 95.0, 1'200'000, 50000, 0, 0);
+    hw_case("R2 6+18, -95 ppm, 1 MHz/ch, 1 us jitter", 6, -95.0, 1'000'000, 1e6, 0, 0);
+    hw_case("R2 6+18, 2 kHz/ch, +60 ppm", 6, 60.0, 500'000, 2000, 0, 0);
+    hw_case("R2 6+18, 2 s silence, -60 ppm", 6, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
     // Release 1 frame policy: 24 + 20 bits SDR, 10 ns coarse ticks.
     hw_case("R1 policy (24+20), +80 ppm", 0, 80.0, 2'000'000, 50000, 0, 0, true);
     hw_case("R1 policy, 2 s silence, -60 ppm", 0, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0, true);
@@ -309,6 +315,49 @@ static void test_lifecycle() {
     {
         TdcBackend b(o);
         CHECK(b.setup_action() == "calibrated");
+        const auto st = b.last_status();
+        CHECK(st.lvds.ref_bits == 24 && st.lvds.stop_bits == 18 && st.lvds.ddr && st.lvds.divider_code() == 0);
+    }
+    o.recalibrate = false;
+    // A fallback calibration (125 MHz SDR, made by hand as in the app's TDC page) stays the setup.
+    {
+        TdcBackend b(o);
+        auto config = policy_gpx_config(b.last_status().lvds.timing, 8e6, 0, 0, 0, false);
+        tdcctl::CalibrationOptions co;
+        co.divider_code = 1;
+        const auto r = b.session().calibrate(config, co);
+        CHECK(r.success);
+        b.record_calibration("test fallback");
+    }
+    {
+        TdcBackend b(o);
+        CHECK(b.setup_action() == "skipped");   // the policy now is SDR (from the state file): nothing to redo
+        CHECK(!b.last_status().lvds.ddr && b.last_status().lvds.divider_code() == 1);
+    }
+    TdcBackend::simulate_unplug();   // power cycle: the setup calibrates at the fallback again
+    {
+        TdcBackend b(o);
+        CHECK(b.setup_action() == "calibrated");
+        const auto st = b.last_status();
+        CHECK(!st.lvds.ddr && st.lvds.divider_code() == 1 && st.lvds.ref_bits == 24 && st.lvds.stop_bits == 18);
+        CHECK(b.set_up());
+    }
+    // A release-1 session in between (power cycle: release 1 from flash) keeps the release-2 fallback.
+    TdcBackend::simulate_unplug();
+    TdcBackend::simulated_fpga().release1();
+    {
+        TdcBackend b(o);
+        CHECK(b.setup_action() == "calibrated");
+        const auto st = b.last_status();
+        CHECK(st.design_version == tdcctl::kDesignVersionR1 && !st.lvds.ddr && st.lvds.ref_bits == 24 && st.lvds.stop_bits == 20);
+    }
+    CHECK(std::filesystem::exists(dir / "SIMULATED-FPGA.json") && std::filesystem::exists(dir / "SIMULATED-FPGA.release2.json"));
+    TdcBackend::simulate_unplug();   // release 2 loaded again
+    {
+        TdcBackend b(o);
+        CHECK(b.setup_action() == "calibrated");
+        const auto st = b.last_status();
+        CHECK(st.design_version == tdcctl::kDesignVersionR2 && !st.lvds.ddr && st.lvds.divider_code() == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -428,7 +477,7 @@ static void test_saved_streams() {
         std::printf("  %-26s live %zu tags, file %zu tags (%llu records, %.4f s), matched %zu\n",
                     mode == 0 ? "recorded from run start" : mode == 1 ? "recorder joined mid-run" : "2 ms time limit",
                     live.size(), got.size(), static_cast<unsigned long long>(prog.records), prog.seconds, matched);
-        CHECK(info.have_sidecar && info.ref_bits == 6 && info.ddr && info.coarse_tick_ns == 8.0);
+        CHECK(info.have_sidecar && info.ref_bits == 24 && info.stop_bits == 18 && info.ddr && info.coarse_tick_ns == 8.0);
         CHECK(prog.lost == 0 && prog.error.empty());
         CHECK(same);
         if (mode == 0) CHECK(matched == live.size());   // the file holds the whole live window (and the run's end)

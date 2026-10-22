@@ -54,6 +54,11 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   10. Frames: release 2 = shortest safe frame (tdcctl's automatic choice);
       release 1 = 24 + 20 bits until 16 + 18 is tested on the board. **Show in
       the app which release is loaded and what the frames are** (config panel).
+      **Superseded 2026-10-22 (later): release 2 default = 24 + 18 bits**
+      (user: "I want 24, 18 to be the default"), after discussing the 6-bit
+      index's re-anchoring at low rates.
+- 2026-10-22 (later): "take a look at release 2 ... give me instructions" for
+  the first hardware test: `docs/HARDWARE_TEST_R2.md`.
   11. **Neither the app nor Python resets anything on connect/open** (no
       trigger/hysteresis defaults applied; read back what the board has).
       Python still configures and calibrates the GPX2 on the first open after
@@ -83,7 +88,15 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   a new clock-ratio segment (before, a re-anchor could mix a wrong wrap into
   the ratio). Simulated: exact to the ps with +-95 ppm and 1 us jitter; one
   re-anchor after a 2 s silence.
-- **Frame policy** in `dt::policy_gpx_config` (both the app and Python).
+- **Frame policy** in `dt::policy_gpx_config` (both the app and Python):
+  release 2 24 + 18 bits (11.9 M events/s per channel at 250 MHz DDR, 2.1 s
+  wrap), DDR unless the last calibration was SDR; release 1 24 + 20 SDR.
+- **The setup follows the last successful calibration** (state file:
+  divider code and `ddr`), so a release-2 fallback rate calibrated once in the
+  app's TDC page survives power cycles and is used by Python too. **One state
+  file per release** (`<serial>.json` release 1, as SDE/Dantagger;
+  `<serial>.release2.json`): power cycles bring back release 1 from flash
+  while release 2 is tested from RAM, and neither overwrites the other.
 - **Opening applies nothing** (`Backend::current_trigger/hysteresis`,
   `Tagger::sync_from_backend`). Python's first open after power-up still
   configures and calibrates (setup, not a reset). The app connects with
@@ -120,7 +133,7 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 |---|---|
 | Copy, provenance, build (`build.py`) | Done; `docs/PROVENANCE.md`, `docs/copied_sha256.txt` |
 | Host library tests (TDC_Firmware) | 146 checks PASS (also ASan/UBSan) |
-| Core C++ tests | 4,450,601 checks PASS (also ASan/UBSan): release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
+| Core C++ tests | 4,450,637 checks PASS (also ASan/UBSan): release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
 | Python tests | 27 PASS, bit-exact against Swabian (oracle) |
 | Benchmarks | as SDE/Dantagger within noise: end to end tomography set 55-59 M tags/s, HistogramND 360-372, decoder 85-99 M records/s (noisy) |
 | App | `build/app/dantagger`; `--selftest` 26 steps PASS (3 runs), screenshots; `--snapshot` works against the simulator |
@@ -135,9 +148,12 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
    channel; the SDE laser start runs at 2.73 MHz. That is why SDE/Dantagger
    used 16 + 18 (2.94 M/s). With release 1 and those scripts use
    `DANTAGGER_FRAME=16,18` (untested on the board) or release 2 (20.8 M/s).
-3. Release 2 decoding at low rates: before the clock ratio is measured (50 ms
-   of events) a silence longer than ~10 ms re-anchors (an event placed by the
-   coarse clock, ~1 us uncertain). Check on the board.
+3. ~~Release 2 decoding at low rates (6-bit index re-anchors)~~: resolved by
+   the 24 + 18 default (simulated: no re-anchor over 30 s of silence at
+   +100 ppm). The 6-bit frame remains an override and keeps its tests.
+7. Release 2 bring-up on the board: `docs/HARDWARE_TEST_R2.md` (tdcctl with
+   `--ref-bits 24 --stop-bits 18`, then the app and Python; fallback ladder in
+   the app). USB 3 throughput (test pattern at full rate) still unmeasured.
 4. Python scripts that relied on the 0.010 V / 1000 ohm defaults on open now
    get the board's values (a freshly powered board: -0.1004 V).
 5. The SDE venv's `import TimeTagger` switch still points at SDE/Dantagger;
@@ -175,3 +191,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   test), file backend + recorder (with tests), measurement diagnostics, the
   new app (docking, six panel types, setup pages, shared persistent channel
   settings, saved streams, self-test), docs. All tests pass. First commit.
+- 2026-10-22: Release 2 default frame 24 + 18 (user); setup follows the last
+  calibration's divider and SDR/DDR; one state file per release; app manual
+  GPX2 inputs default to 24 + 18; tests (policy cases, 6-bit override cases,
+  fallback survives power cycles and a release-1 session); the tdcctl part
+  of the procedure rehearsed on the simulated FPGA; `docs/HARDWARE_TEST_R2.md`.

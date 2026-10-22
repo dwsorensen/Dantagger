@@ -17,10 +17,13 @@
 // SetupMode::none (the app) changes nothing on open; the app offers the same
 // setup as a button.  Neither mode touches the comparator (user, 2026-10-22).
 //
-// Frame policy (user, 2026-10-22): release 2 = DDR, the shortest stop width
-// for a 1 ps LSB and the shortest reference index that keeps times
-// unambiguous at full LCLKIN (tdcctl's automatic choice: 6 + 18 bits at
-// 250 MHz); release 1 = SDR, 24 + 20 bits (the format proven on the board).
+// Frame policy (user, 2026-10-22): release 2 = 24 + 18 bits (a 2.1 s
+// reference-index wrap: times unwrap safely at any count rate; 11.9 M
+// events/s per channel at 250 MHz DDR), DDR unless the last calibration was
+// made in SDR; release 1 = SDR, 24 + 20 bits (the format proven on the board).
+// The automatic setup calibrates at the LCLKIN rate of the last successful
+// calibration recorded in the state file (default the fastest), so a
+// fallback rate chosen in the app's TDC page stays in use after power cycles.
 //
 // Each run decodes with the GPX2 configuration and clocking the board
 // reports at its start, so a configuration made by hand in the app decodes
@@ -64,7 +67,7 @@ struct TdcOptions {
 // The GPX2 configuration of the frame policy above, for an image with
 // `timing`; non-zero overrides replace the widths.  Throws tdcctl::ArgumentError.
 tdcctl::GpxConfig policy_gpx_config(const tdcctl::LinkTiming& timing, double refclk_hz, int high_resolution,
-                                    int ref_bits_override = 0, int stop_bits_override = 0);
+                                    int ref_bits_override = 0, int stop_bits_override = 0, bool ddr = true);
 
 // "Release 2 (design 0x54440002)" or "Release 1 (...)" or "unknown design ...".
 std::string release_name(std::uint32_t design_version);

@@ -14,8 +14,8 @@ struct PagesState {
     // TDC-GPX2 (manual configuration)
     double lsb_ps{1.0};
     int ref_bits_idx{7};                // 24 (used when auto_widths is off)
-    int stop_bits_idx{3};               // 20
-    bool auto_widths{true};             // release 2: shortest frame for the LSB and LCLKIN
+    int stop_bits_idx{2};               // 18
+    bool auto_widths{false};            // release 2: shortest frame for the LSB and LCLKIN
     bool ddr{true};                     // release 2 only
     std::array<bool, 4> channels{{true, true, true, true}};
     int hires{0};

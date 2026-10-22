@@ -37,6 +37,7 @@ std::shared_ptr<tdcctl::FakeFpga>& shared_fake() {
 struct LvdsCache {
     bool valid{false};
     int phase{0}, divider{0}, bit_phase{0};
+    bool ddr{true};                    // capture format of that calibration (absent in older files: DDR)
     std::array<int, kNumChannels> sdo{}, frame{};
 };
 
@@ -70,6 +71,8 @@ LvdsCache read_cache(const std::string& path) {
     };
     c.valid = get_int("phase_step", c.phase) && get_int("divider_code", c.divider) && get_int("bit_phase", c.bit_phase) &&
               get_arr("sdo_taps", c.sdo) && get_arr("frame_taps", c.frame);
+    int ddr = 1;
+    if (get_int("ddr", ddr)) c.ddr = ddr != 0;
     return c;
 }
 
@@ -86,7 +89,8 @@ void write_cache(const std::string& path, const tdcctl::LvdsState& lv, const std
         std::ofstream out(tmp);
         out << "{\n  \"phase_step\": " << lv.phase_step() << ",\n  \"divider_code\": " << lv.divider_code()
             << ",\n  \"bit_phase\": " << lv.bit_phase() << ",\n  \"sdo_taps\": [" << join(taps(lv.sdo_taps))
-            << "],\n  \"frame_taps\": [" << join(taps(lv.frame_taps)) << "],\n  \"design_version\": " << lv.timing.design
+            << "],\n  \"frame_taps\": [" << join(taps(lv.frame_taps)) << "],\n  \"ddr\": " << (lv.ddr ? 1 : 0)
+            << ",\n  \"design_version\": " << lv.timing.design
             << ",\n  \"note\": \"" << note << "\"\n}\n";
     }
     std::filesystem::rename(tmp, path);
@@ -118,19 +122,17 @@ int resolution_factor(int code) { return code == 1 ? 2 : code == 2 ? 4 : 1; }
 // Frame policy and descriptions
 // ---------------------------------------------------------------------------
 tdcctl::GpxConfig policy_gpx_config(const tdcctl::LinkTiming& timing, double refclk_hz, int high_resolution,
-                                    int ref_bits_override, int stop_bits_override) {
+                                    int ref_bits_override, int stop_bits_override, bool ddr) {
     tdcctl::GpxConfig c;
     c.channel_mask = 0xF;
     c.lvds_out = true;
     c.high_resolution = high_resolution;
     c.refclk_divisions = tdcctl::GpxConfig::divisions_for(refclk_hz, 1.0);
     if (timing.release2()) {
-        c.ddr = true;
+        c.ddr = ddr;
         c.stop_bits = stop_bits_override ? stop_bits_override : tdcctl::min_stop_bits(c.refclk_divisions);
-        c.ref_index_bits = ref_bits_override ? ref_bits_override
-                                             : tdcctl::min_ref_index_bits(timing, 0, true, c.stop_bits, high_resolution, refclk_hz);
-        if (c.stop_bits == 0 || c.ref_index_bits == 0)
-            throw tdcctl::ArgumentError("no GPX2 frame keeps 1 ps times unambiguous at this LCLKIN");
+        c.ref_index_bits = ref_bits_override ? ref_bits_override : 24;
+        if (c.stop_bits == 0) throw tdcctl::ArgumentError("the LSB is too fine for 20 stop bits");
     } else {
         c.ddr = false;
         c.ref_index_bits = ref_bits_override ? ref_bits_override : 24;
@@ -258,7 +260,13 @@ std::string TdcBackend::model() const {
     return "Dantagger TDC (TDC-GPX2, " + release_name(last_status().design_version) + ")";
 }
 
-std::string TdcBackend::state_path() const { return state_dir_ + "/" + serial_ + ".json"; }
+// One state file per firmware release (power cycles bring back release 1 from
+// flash while release 2 is tested from RAM: neither may overwrite the other's
+// calibration).  Release 1 keeps SDE/Dantagger's name.
+std::string TdcBackend::state_path() const {
+    const bool r2 = last_status().design_version == tdcctl::kDesignVersionR2;
+    return state_dir_ + "/" + serial_ + (r2 ? ".release2.json" : ".json");
+}
 
 tdcctl::Response TdcBackend::last_status() const {
     std::lock_guard<std::mutex> lock(state_mu_);
@@ -278,8 +286,10 @@ tdcctl::Response TdcBackend::refresh() {
 
 tdcctl::GpxConfig TdcBackend::policy_config() {
     const auto st = last_status();
+    const auto cache = read_cache(state_path());   // release 2: SDR or DDR as the last calibration
     try {
-        return policy_gpx_config(st.lvds.timing, refclk_hz_, high_resolution_, ref_override_, stop_override_);
+        return policy_gpx_config(st.lvds.timing, refclk_hz_, high_resolution_, ref_override_, stop_override_,
+                                 cache.valid ? cache.ddr : true);
     } catch (const std::exception& e) {
         throw DeviceError(std::string("GPX2 frame: ") + e.what());
     }
@@ -315,7 +325,8 @@ void TdcBackend::record_calibration(const std::string& note) {
 
 std::string TdcBackend::run_setup(bool force_calibrate) {
     const auto st = refresh();
-    const bool calibrated = !force_calibrate && calibrated_per_cache(st, read_cache(state_path()));
+    const auto cache = read_cache(state_path());
+    const bool calibrated = !force_calibrate && calibrated_per_cache(st, cache);
     const auto config = policy_config();
     const auto wanted = config.bytes();
     const bool configured = st.gpx.configured() && st.gpx.verified() && st.gpx.measuring() && !st.gpx.test_pattern() &&
@@ -323,14 +334,17 @@ std::string TdcBackend::run_setup(bool force_calibrate) {
     std::string message;
     if (!calibrated) {
         tdcctl::CalibrationOptions co;
+        // The LCLKIN rate of the last successful calibration (a fallback chosen in the app stays chosen).
+        co.divider_code = cache.valid && st.lvds.timing.release2() ? std::clamp(cache.divider, 0, 3) : 0;
         const auto result = session_->calibrate(config, co);
         refresh();
         if (!result.success) throw DeviceError("LVDS calibration of the TDC board failed: " + result.message);
         record_calibration("calibrated by Dantagger");
         setup_action_ = "calibrated";
-        char buf[160];
-        std::snprintf(buf, sizeof buf, "bit phase %d, phase step %d, error-free window %.0f ps of %.0f ps",
-                      result.chosen_bit_phase, result.chosen_phase, result.good_width_ps, result.bit_ps);
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "LCLKIN %.4g MHz, bit phase %d, phase step %d, error-free window %.0f ps of %.0f ps",
+                      st.lvds.timing.lclkin_mhz(co.divider_code), result.chosen_bit_phase, result.chosen_phase,
+                      result.good_width_ps, result.bit_ps);
         message = "TDC-GPX2 configured (" + tdcctl::describe_gpx_config(wanted) + "), LVDS calibrated (" + buf + ")";
     } else if (!configured) {
         configure_gpx(config);

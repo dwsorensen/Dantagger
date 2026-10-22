@@ -553,7 +553,8 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
         if (t.frames == 1) a.dev.setup(false);
         if (t.frames < 3 || !idle()) return false;
         t.expect(v().set_up, "configured and calibrated");
-        t.expect(v().capture.find("6 + 18-bit frames") == 0, "release-2 frame policy: " + v().capture);
+        t.expect(v().capture.find("24 + 18-bit frames (42 bits), DDR at LCLKIN 250 MHz: at most 11.90 M") == 0,
+                 "release-2 frame policy: " + v().capture);
         t.expect(v().policy_frame, "the policy configuration is in use");
         return true;
     });
@@ -708,7 +709,7 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
         bool same = e[3] > 0;
         for (int c = 0; c < 4; ++c) same = same && metric(*a.panels.back(), "counts" + std::to_string(c + 1)) == static_cast<double>(e[c]);
         t.expect(same, buf);
-        t.expect(info.ref_bits == 6 && info.ddr, "sidecar: release-2 frames");
+        t.expect(info.ref_bits == 24 && info.stop_bits == 18 && info.ddr, "sidecar: release-2 frames");
         t.expect(a.panels.back()->error().empty(), "no error: " + a.panels.back()->error());
         return true;
     }, 30);
