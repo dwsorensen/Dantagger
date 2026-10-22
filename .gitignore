@@ -1,0 +1,6 @@
+build/
+data/
+__pycache__/
+*.pyc
+python/Dantagger/_dantagger*.so
+.pytest_cache/
