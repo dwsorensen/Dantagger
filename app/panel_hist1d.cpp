@@ -210,11 +210,9 @@ protected:
             std::snprintf(xl, sizeof(xl), "%s (%s)", x_label(), ui::kUnits[unit]);
             ImPlot::SetupAxes(xl, y_label());
             if (log_y_) ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-            double ymax = 0;
-            for (double y : ys_) ymax = std::max(ymax, y);
             const ImPlotCond cond = autofit_ ? ImPlotCond_Always : ImPlotCond_Once;
             ImPlot::SetupAxisLimits(ImAxis_X1, x0 * scale, (x0 + range) * scale, cond);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, log_y_ ? 0.4 * ys : 0.0, std::max(ymax * 1.08, ys), cond);
+            ui::setup_y_padded(ys_.data(), ys_.size(), log_y_, autofit_);   // the shown steps with a margin
             ImPlot::PushStyleColor(ImPlotCol_Line, ui::c_accent());
             ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(ui::c_accent().x, ui::c_accent().y, ui::c_accent().z, 0.28f));
             ImPlot::PlotStairs("counts", xs_.data(), ys_.data(), static_cast<int>(xs_.size()), ImPlotStairsFlags_Shaded);

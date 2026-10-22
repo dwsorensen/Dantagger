@@ -154,9 +154,15 @@ protected:
         const auto vis = visible();
         if (ImPlot::BeginPlot("##crh", ImVec2(-1, std::max(180.0f, ImGui::GetContentRegionAvail().y - 4)))) {
             const ImPlotAxisFlags af = autofit_ ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
-            ImPlot::SetupAxes("capture time (s)", "rate (1/s)", af, af);
+            ImPlot::SetupAxes("capture time (s)", "rate (1/s)", af, ImPlotAxisFlags_None);
             if (log_y_) ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-            ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+            {   // y: the shown rates with a margin
+                std::vector<double> all;
+                for (int c : chans_)
+                    for (const auto* s : vis) all.push_back(log_y_ ? std::max(s->rate[static_cast<std::size_t>(c - 1)], 0.5) : s->rate[static_cast<std::size_t>(c - 1)]);
+                ui::setup_y_padded(all.data(), all.size(), log_y_, autofit_);
+            }
+            ImPlot::SetupLegend(ImPlotLocation_North, ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
             std::vector<double> xs, ys;
             for (int c : chans_) {
                 xs.clear();

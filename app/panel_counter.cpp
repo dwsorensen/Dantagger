@@ -139,9 +139,20 @@ protected:
         // ---- trace ----
         if (ImPlot::BeginPlot("##ctr", ImVec2(-1, std::max(180.0f, ImGui::GetContentRegionAvail().y - 4)))) {
             const ImPlotAxisFlags af = autofit_ ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
-            ImPlot::SetupAxes("capture time (s)", normalized_ ? "rate (1/s)" : "counts per bin", af, af);
+            ImPlot::SetupAxes("capture time (s)", normalized_ ? "rate (1/s)" : "counts per bin", af, ImPlotAxisFlags_None);
             if (log_y_) ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-            ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+            {   // y: the shown bins with a margin
+                double lo = INFINITY, hi = -INFINITY;
+                for (std::size_t s = 0; s < chans_.size(); ++s)
+                    for (std::int64_t j = 0; j < filled; ++j) {
+                        double v = scale() * data_[s * static_cast<std::size_t>(n_) + first + static_cast<std::size_t>(j)];
+                        if (log_y_) v = std::max(v, 0.5 * scale());
+                        lo = std::min(lo, v);
+                        hi = std::max(hi, v);
+                    }
+                ui::setup_y_padded(lo, hi, log_y_, autofit_);
+            }
+            ImPlot::SetupLegend(ImPlotLocation_North, ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
             xs_.resize(static_cast<std::size_t>(filled));
             ys_.resize(static_cast<std::size_t>(filled));
             const double t0 = static_cast<double>(completed_ - filled) * bw_s;

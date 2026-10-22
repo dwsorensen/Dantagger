@@ -275,12 +275,10 @@ protected:
                 std::snprintf(xlabel, sizeof(xlabel), "u at %.1f° (%s)", proj_deg_, ui::kUnits[unit]);
                 ImPlot::SetupAxes(xlabel, "counts per bin");
                 if (proj_log_y_) ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                double peak = 0;
-                for (double c : proj_.counts) peak = std::max(peak, c);
                 const double u1 = proj_.u0_ps + static_cast<double>(proj_.counts.size()) * proj_.bin_ps;
                 const ImPlotCond cond = autofit_ ? ImPlotCond_Always : ImPlotCond_Once;
                 if (!proj_.counts.empty()) ImPlot::SetupAxisLimits(ImAxis_X1, proj_.u0_ps * scale, u1 * scale, cond);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, proj_log_y_ ? 0.8 : 0.0, std::max(1.0, peak * 1.08), cond);
+                ui::setup_y_padded(proj_.counts.data(), proj_.counts.size(), proj_log_y_, autofit_);   // with a margin
                 if (!proj_.counts.empty()) {
                     pxs_.resize(proj_.counts.size() + 1);
                     pys_.resize(proj_.counts.size() + 1);

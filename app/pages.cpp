@@ -537,7 +537,9 @@ void page_tdc(AppContext& ctx, PagesState& s) {
                 const double bit_ps = v.last_cal ? v.last_cal->bit_ps : timing.samples_per_bit(s.divider, r && r->lvds.ddr) * timing.sample_ps;
                 ImPlot::SetupAxes("sampling point in the bit (ps)", "good frames (min of lanes)");
                 ImPlot::SetupAxisLimits(ImAxis_X1, -bit_ps * 0.02, bit_ps * 1.02, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 2600, ImPlotCond_Once);
+                double top = 1;   // good frames depend on the release and rate (release 2: ~11,900 per ms and lane)
+                for (double y : ys_good) top = std::max(top, y);
+                ui::setup_y_padded(0, top, false, true);
                 ImPlot::PushStyleColor(ImPlotCol_Fill, ui::c_ok());
                 const double bar = std::max(1.0, bit_ps / 150.0);
                 if (!xs_good.empty()) ImPlot::PlotBars("error-free", xs_good.data(), ys_good.data(), static_cast<int>(xs_good.size()), bar);
@@ -708,8 +710,14 @@ void page_scan(AppContext& ctx, PagesState& s) {
             ctx.dev.log(Level::ok, "scan exported to " + path);
         }
         if (ImPlot::BeginPlot("##scan", ImVec2(-1, std::max(200.0f, ImGui::GetContentRegionAvail().y - 2)))) {
-            ImPlot::SetupAxes("trigger (V)", "count rate (1/s)", ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+            ImPlot::SetupAxes("trigger (V)", "count rate (1/s)");
+            ImPlot::SetupLegend(ImPlotLocation_North, ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
             if (s.scan_log_y) ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+            {   // y: the measured rates with a margin
+                std::vector<double> rates;
+                for (const auto& p : v.scan_points) rates.push_back(s.scan_log_y ? std::max(p.rate_hz, 0.5) : p.rate_hz);
+                ui::setup_y_padded(rates.data(), rates.size(), s.scan_log_y, true);
+            }
             const auto& rq = v.scan_total ? v.scan_request : q;
             ImPlot::SetupAxisLimits(ImAxis_X1, std::min(rq.from_v, rq.to_v) - 0.02, std::max(rq.from_v, rq.to_v) + 0.02,
                                     ImPlotCond_Always);

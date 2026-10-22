@@ -68,6 +68,15 @@ std::string fmt_time_err(double value_ps, double err_ps);
 double hysteresis_mv(double ohms);
 extern const char* kHysteresisHelp;
 
+// Y-axis limits with a margin around the plotted data [lo, hi]: 5 % of the
+// span on each side (on a log axis 5 % of the decades, at least 0.05 decade;
+// non-positive values are ignored there).  Set them for the plot being set
+// up: every frame with auto-fit, once without (the user zooms).
+void padded_limits(double lo, double hi, bool log, double& out_lo, double& out_hi);
+void setup_y_padded(double lo, double hi, bool log, bool autofit);
+// The same for a set of values (NaNs skipped; an empty set gives 0 ... 1).
+void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit);
+
 // Plot time units: 0 auto, 1 ps, 2 ns, 3 µs, 4 ms, 5 s.
 extern const char* kUnits[6];
 extern const double kUnitPs[6];

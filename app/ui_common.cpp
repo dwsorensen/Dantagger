@@ -1,5 +1,6 @@
 #include "ui_common.hpp"
 
+#include <implot.h>
 #include <portable-file-dialogs.h>
 
 #include <algorithm>
@@ -308,6 +309,45 @@ std::string fmt_time_err(double v, double err) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.*f ± %.*f %s", digits, v / k, digits, e, unit);
     return buf;
+}
+
+void padded_limits(double lo, double hi, bool log, double& out_lo, double& out_hi) {
+    constexpr double kPad = 0.05;
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi < lo) {
+        lo = log ? 1.0 : 0.0;
+        hi = log ? 10.0 : 1.0;
+    }
+    if (log) {
+        if (hi <= 0) hi = 10.0;
+        if (lo <= 0) lo = hi * 1e-3;
+        const double l0 = std::log10(lo), l1 = std::log10(hi);
+        const double pad = std::max(0.05, kPad * (l1 - l0));
+        out_lo = std::pow(10.0, l0 - pad);
+        out_hi = std::pow(10.0, l1 + pad);
+        return;
+    }
+    double span = hi - lo;
+    if (span <= 0) span = std::max(std::fabs(hi) * 0.1, 1.0);   // a flat line: show it in the middle
+    out_lo = lo - kPad * span;
+    out_hi = hi + kPad * span;
+}
+
+void setup_y_padded(double lo, double hi, bool log, bool autofit) {
+    double a, b;
+    padded_limits(lo, hi, log, a, b);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, a, b, autofit ? ImPlotCond_Always : ImPlotCond_Once);
+}
+
+void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit) {
+    double lo = INFINITY, hi = -INFINITY;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double v = values[i];
+        if (std::isnan(v) || (log && v <= 0)) continue;
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+    }
+    if (lo > hi) lo = hi = NAN;
+    setup_y_padded(lo, hi, log, autofit);
 }
 
 const char* kUnits[6] = {"auto", "ps", "ns", "µs", "ms", "s"};
