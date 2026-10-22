@@ -68,6 +68,11 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
       says otherwise.
   13. `git init` here; commit at the end of the work session. The app is
       called **Dantagger**.
+- 2026-10-22: **`icon.png` (repository root) is the app's icon "in this and
+  future releases".** `build.py` embeds it at every app build (`icon_source()`:
+  RGBA at 16-256 px; Pillow if available, else a pure-Python decoder that
+  matches it); the app sets it on its main window and on measurements in
+  their own windows; X11 class `Dantagger`. Replace the file to change it.
 - Carried over from both projects: hardware access is the user's (do not
   load the FPGA, run commands on the board only when asked); commit only when
   asked; one heavy job at a time (N95, 4 cores, 7.7 GB, shared machine; no
@@ -204,6 +209,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   test), file backend + recorder (with tests), measurement diagnostics, the
   new app (docking, six panel types, setup pages, shared persistent channel
   settings, saved streams, self-test), docs. All tests pass. First commit.
+- 2026-10-22: App icon from `icon.png` (embedded by build.py; all windows).
+  Y axes with a 5 % margin around the data; calibration plot no longer capped.
 - 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board (user's app
   session, 12:50). FPGA overflows under a saturated PC: more USB transfers in
   flight and a larger library queue; `tools/usb_bench.cpp`.

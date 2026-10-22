@@ -30,6 +30,7 @@
 #include <implot.h>
 #include <portable-file-dialogs.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -42,9 +43,21 @@
 #include <string>
 #include <vector>
 
+extern const int k_icon_count;
+extern const int k_icon_sizes[];
+extern const unsigned char* const k_icon_pixels[];
+
 namespace {
 
 namespace fs = std::filesystem;
+
+// The app icon (icon.png, embedded by build.py) on a GLFW window.
+void set_icon(GLFWwindow* window) {
+    std::vector<GLFWimage> images;
+    for (int i = 0; i < k_icon_count; ++i)
+        images.push_back({k_icon_sizes[i], k_icon_sizes[i], const_cast<unsigned char*>(k_icon_pixels[i])});
+    glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
+}
 using app::Kind;
 using app::Level;
 
@@ -913,12 +926,15 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
     if (headless) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "Dantagger");   // for a desktop entry's StartupWMClass
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "dantagger");
     GLFWwindow* window = glfwCreateWindow(1600, 1000, args.simulate ? "Dantagger  [SIMULATED]" : "Dantagger", nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "cannot open a window with OpenGL 3.0\n");
         glfwTerminate();
         return 1;
     }
+    set_icon(window);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     gl_viewport = gl_proc<PfnViewport>("glViewport");
@@ -1171,6 +1187,15 @@ int main(int argc, char** argv) {
                 ImGui::UpdatePlatformWindows();
                 ImGui::RenderPlatformWindowsDefault();
                 glfwMakeContextCurrent(backup);
+                // Measurements in their own windows get the icon too (once per window).
+                static std::vector<void*> iconified;
+                for (ImGuiViewport* pv : ImGui::GetPlatformIO().Viewports)
+                    if (pv->PlatformHandle && pv != ImGui::GetMainViewport() &&
+                        std::find(iconified.begin(), iconified.end(), pv->PlatformHandle) == iconified.end()) {
+                        set_icon(static_cast<GLFWwindow*>(pv->PlatformHandle));
+                        iconified.push_back(pv->PlatformHandle);
+                    }
+                if (iconified.size() > 256) iconified.clear();
             }
             glfwSwapBuffers(window);
             if (test.done) break;

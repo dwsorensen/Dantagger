@@ -51,6 +51,10 @@ build/app/dantagger              # the board
 build/app/dantagger --simulate   # a simulated board: 1 MHz laser on ch 4, detectors on 1 and 2 (31.55 / 31.75 ns), Poisson on 3
 ```
 
+**Icon.** `icon.png` in the repository root is the app's icon: every app
+build embeds it (no file is needed next to the binary), and the window class
+is `Dantagger` (for a desktop launcher's `StartupWMClass`).
+
 **Board.** Connecting changes nothing on the board. The sidebar and the
 *TDC-GPX2 & LVDS* page show the firmware release and the capture format
 (e.g. *Release 2 (design 0x54440002) · 24 + 18-bit frames (42 bits), DDR at
