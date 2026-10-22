@@ -224,7 +224,7 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   settings, saved streams, self-test), docs. All tests pass. First commit.
 - 2026-10-22: App icon from `icon.png` (embedded by build.py; all windows).
   Y axes with a 5 % margin around the data; calibration plot no longer capped.
-- 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board- 2026-10-22: Receive / decode / engine threads (board: 23.35 M tags/s, 0
+- 2026-10-22: Receive / decode / engine threads (board: 23.35 M tags/s, 0
   dropped); `Session::stream_batches`; thread names; TSan clean.
 - 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board (user's app
   session, 12:50). FPGA overflows under a saturated PC: more USB transfers in
