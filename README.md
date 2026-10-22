@@ -175,6 +175,19 @@ README; `docs/SWABIAN_API_USAGE.md`, `docs/GAMEPLAN.md`), with these changes
 point at *this* package. The SDE venv's switch still points at
 `SDE/Dantagger` until it is reinstalled from here (not done; on request).
 
+## USB buffering
+
+The FPGA's event FIFO holds 8,192 records (under 1 ms at full USB 3 speed).
+Dantagger keeps 64 USB transfers of 4 KiB in flight (TDC_Firmware's tools: the
+D3XX default 8) and a 4,096-buffer library queue (default 256), so short
+pauses of this computer (a busy CPU) do not overflow it. The transfer size
+stays one FPGA frame, so there is no added delay at low rates.
+`DANTAGGER_USB=URBS,QUEUE` overrides it (app and Python; `0,0` = the
+library defaults); if the driver refuses the values the open falls back to
+the defaults and says so (log, `info()`). `build/usb_bench` measures the
+board's USB throughput under several settings (test pattern or `--live`,
+`--load N` busy threads to simulate a loaded computer).
+
 ## Hardware status
 
 Nothing in this package has run on the board yet. `SDE/Dantagger` never did;
@@ -198,7 +211,7 @@ off if on; screenshots of the Comparator and TDC pages).
 | `app/` | the app: `main.cpp` (window, docking, sidebar, rate bar, layouts, self-test), `device` (board worker, shared channel settings, scan), `panel` (panel base, channel table), `panel_*.cpp` (the six types), `pages` (setup pages), `ui_common`, `rate_monitor`, `config` |
 | `tests/` | Python tests, `tests/cpp/test_core.cpp`, the Swabian oracle |
 | `bench/` | benchmarks |
-| `switch/`, `tools/` | the `import TimeTagger` switch and its installer; the Swabian usage scanner |
+| `switch/`, `tools/` | the `import TimeTagger` switch and its installer; the Swabian usage scanner; `usb_bench.cpp` |
 | `third_party/` | FTDI D3XX 1.1.8, pybind11 3.1.0, Dear ImGui 1.90.9-docking, ImPlot 0.16, GLFW 3.4, portable-file-dialogs 0.1.0 |
 | `docs/` | `HARDWARE_TEST_R2.md` (release 2 bring-up), `PROTOCOL.md` (firmware), provenance, the SDE Dantagger plan and API scan |
 | `data/` | saved tag streams and exports (not in git) |

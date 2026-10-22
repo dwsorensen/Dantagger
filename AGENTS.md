@@ -127,6 +127,19 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 - Docking: Dear ImGui 1.90.9-docking (same release as before, ImPlot 0.16
   unchanged), multi-viewport on (separate OS windows through XWayland here).
 
+- **USB buffering (2026-10-22, user's first app session on release 2):**
+  constant FPGA overflow warnings with ch 1-3 at high rate while the PC was
+  saturated (SDE `tomography_bootstrap_gui.py` with 4 workers, 0 % idle,
+  3 GB swap). Read-only diagnosis: USB 3 at 5 Gb/s; no app thread pegged;
+  the tight spot was 8 x 4 KiB transfers in flight + the FPGA's 8192-record
+  FIFO (~1 ms at full speed) that the D3XX library thread must keep serviced.
+  Now 64 transfers in flight and a 4096-buffer library queue
+  (`TdcOptions::usb_urb_count/usb_queue_buffers`, env `DANTAGGER_USB`,
+  fallback to the defaults if refused); transfer size unchanged (4 KiB = one
+  frame: a lone response still completes its transfer, no low-rate delay).
+  `build/usb_bench` compares settings on the board. **Not yet measured on the
+  board.**
+
 ## Status (2026-10-22)
 
 | Part | State |
@@ -191,6 +204,9 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   test), file backend + recorder (with tests), measurement diagnostics, the
   new app (docking, six panel types, setup pages, shared persistent channel
   settings, saved streams, self-test), docs. All tests pass. First commit.
+- 2026-10-22: Release 2 calibrated at 250 MHz DDR on the board (user's app
+  session, 12:50). FPGA overflows under a saturated PC: more USB transfers in
+  flight and a larger library queue; `tools/usb_bench.cpp`.
 - 2026-10-22: Release 2 default frame 24 + 18 (user); setup follows the last
   calibration's divider and SDR/DDR; one state file per release; app manual
   GPX2 inputs default to 24 + 18; tests (policy cases, 6-bit override cases,

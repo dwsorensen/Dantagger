@@ -1,6 +1,6 @@
 """Builds Dantagger (CMake is not installed on the lab PC; g++ is driven directly).
 
-    python3 build.py              # Python module python/Dantagger/_dantagger*.so and the tdcctl CLI
+    python3 build.py              # Python module python/Dantagger/_dantagger*.so, tdcctl, usb_bench
     python3 build.py --tests      # + C++ tests (host library, core), run them
     python3 build.py --asan       # the C++ tests under AddressSanitizer + UBSan
     python3 build.py --bench      # + benchmarks (build/bench)
@@ -168,10 +168,12 @@ def main():
                           "-Wl,-rpath,$ORIGIN/../../third_party/ftd3xx/1.1.8"])
     print(f"built {out.relative_to(ROOT)}")
 
-    # tdcctl command-line tool (TDC_Firmware's, unchanged).
+    # tdcctl command-line tool (TDC_Firmware's, unchanged) and the USB throughput tool.
     cli = compile_all([HOST / "src" / "tdcctl_main.cpp"], "cli", base + HOST_WARN, 1)
     link(lib + cli, BUILD / "tdcctl", d3xx_link)
-    print("built build/tdcctl")
+    usb = compile_all([ROOT / "tools" / "usb_bench.cpp"], "tools", base, 1)
+    link(lib + usb, BUILD / "usb_bench", d3xx_link)
+    print("built build/tdcctl, build/usb_bench")
 
     if args.tests:
         tflags = [f for f in base if f != "-DNDEBUG"]

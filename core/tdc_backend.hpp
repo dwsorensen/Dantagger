@@ -62,6 +62,17 @@ struct TdcOptions {
     int stop_bits{0};
     double refclk_hz{8.0e6};       // the board's REFCLK (SW1 "Int")
     std::string state_dir;         // empty: $XDG_STATE_HOME/dantagger or ~/.local/state/dantagger
+    // USB buffering (D3XX channel-1 IN; env DANTAGGER_USB=URBS,QUEUE overrides,
+    // 0,0 = the library defaults 8 and 256 that TDC_Firmware used).  The URB
+    // size stays one 4 KiB FPGA frame, so a lone response frame always
+    // completes its transfer and low rates see no added delay.  More URBs in
+    // flight let the USB controller keep draining the FPGA's 8192-record
+    // FIFO while the library's thread waits for a CPU (8 x 4 KiB covered
+    // ~0.5 ms at full USB 3 speed); the larger library queue absorbs pauses of
+    // the reading thread (4096 x 4 KiB = 16 MiB).  If the driver refuses them
+    // the open falls back to the defaults (usb_note() says so).
+    int usb_urb_count{64};
+    int usb_queue_buffers{4096};
 };
 
 // The GPX2 configuration of the frame policy above, for an image with
@@ -101,6 +112,8 @@ public:
     const std::string& setup_action() const { return setup_action_; }
     const std::string& setup_message() const { return setup_message_; }
     const std::string& usb_speed() const { return usb_speed_; }
+    // USB buffering in effect ("64 x 4 KiB in flight, 4096 x 4 KiB queue"), and why if it is not the one asked for.
+    const std::string& usb_note() const { return usb_note_; }
     bool simulated() const { return fake_ != nullptr; }
 
     // ---- the app (only while no run streams: Tagger::exclusive) ------------------
@@ -148,6 +161,7 @@ private:
     RecordDecoder decoder_;
     std::string serial_;
     std::string usb_speed_;
+    std::string usb_note_;
     std::string state_dir_;
     std::string setup_action_;
     std::string setup_message_;

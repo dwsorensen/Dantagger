@@ -214,18 +214,47 @@ TdcBackend::TdcBackend(const TdcOptions& options)
         for (const auto& d : devices)
             if (d.serial == serial_ && (d.flags & kFtFlagsOpened) != 0)
                 throw DeviceError("the TDC board (FT601 " + serial_ + ") is busy: another program has it open" + busy_hint);
-        au2ft601::D3xxTransportOptions transport_options;
-        // Refuses an FT601 that is not in the recorded 245-mode, one-channel,
-        // 66.67 MHz configuration before any byte is sent (as tdcctl).
-        transport_options.expected_fifo_clock = au2ft601::FifoClock::mhz66;
-        transport_options.in_urb_buffer_size = static_cast<std::uint32_t>(au2ft601::kFrameSize);
-        d3xx_ = std::make_unique<au2ft601::D3xxTransport>(transport_options);
-        try {
+        int urbs = options.usb_urb_count, queue = options.usb_queue_buffers;
+        if (const char* env = std::getenv("DANTAGGER_USB"); env && *env) {
+            if (std::sscanf(env, "%d,%d", &urbs, &queue) != 2)
+                throw DeviceError(std::string("DANTAGGER_USB must be URBS,QUEUE (e.g. 64,4096; 0,0 = the library defaults), not ") + env);
+        }
+        auto open_with = [&](int u, int q) {
+            au2ft601::D3xxTransportOptions transport_options;
+            // Refuses an FT601 that is not in the recorded 245-mode, one-channel,
+            // 66.67 MHz configuration before any byte is sent (as tdcctl).
+            transport_options.expected_fifo_clock = au2ft601::FifoClock::mhz66;
+            transport_options.in_urb_buffer_size = static_cast<std::uint32_t>(au2ft601::kFrameSize);
+            transport_options.in_urb_count = static_cast<std::uint8_t>(std::clamp(u, 0, 255));
+            transport_options.in_urb_buffer_count = static_cast<std::uint16_t>(std::clamp(q, 0, 65535));
+            d3xx_ = std::make_unique<au2ft601::D3xxTransport>(transport_options);
             d3xx_->open_by_serial(serial_);
+        };
+        try {
+            try {
+                open_with(urbs, queue);
+            } catch (const std::exception& e) {
+                const std::string why = e.what();
+                if ((urbs == 0 && queue == 0) || (why.find("URB") == std::string::npos && why.find("TransferParams") == std::string::npos))
+                    throw;
+                d3xx_.reset();
+                usb_note_ = "the driver refused " + std::to_string(urbs) + " URBs / " + std::to_string(queue) +
+                            " queue buffers (" + why + "); using the library defaults";
+                open_with(0, 0);
+            }
         } catch (const std::exception& e) {
             d3xx_.reset();
             throw DeviceError(std::string("cannot open the TDC board (FT601 ") + serial_ + "): " + e.what() +
                               ". If another program has it open, that is the reason" + busy_hint);
+        }
+        {   // what is in effect, from the transport's report
+            const std::string& info = d3xx_->session_info();
+            std::smatch m;
+            std::string effect = "USB buffering unknown";
+            if (std::regex_search(info, m, std::regex(R"(URB buffer (\d+) B, URB count (\d+), URB buffer count (\d+))")))
+                effect = m[2].str() + " x " + std::to_string(std::stoi(m[1].str()) / 1024) + " KiB in flight, " + m[3].str() +
+                         " x " + std::to_string(std::stoi(m[1].str()) / 1024) + " KiB library queue";
+            usb_note_ = usb_note_.empty() ? effect : effect + " (" + usb_note_ + ")";
         }
         const auto speed = au2ft601::d3xx::usb_speed_for_serial(serial_);
         usb_speed_ = speed ? *speed + " Mb/s" : "unknown speed";
@@ -429,6 +458,7 @@ std::string TdcBackend::info() {
     const auto st = last_status();
     std::ostringstream o;
     o << "TDC board " << serial_ << " (USB " << usb_speed_ << "), " << release_name(st.design_version) << "\n";
+    if (d3xx_) o << "  USB: " << usb_note_ << "\n";
     o << "  setup: " << setup_message_ << "\n";
     o << "  GPX2: " << tdcctl::describe_gpx_config(st.gpx.written) << "\n";
     o << "  capture: " << describe_capture(st) << "\n";

@@ -274,6 +274,8 @@ void Device::do_connect() {
         post_state();
         const auto v = view();
         log(Level::ok, "connected to " + v.link_text + ", " + v.release + "; " + raw->setup_message());
+        if (!raw->usb_note().empty())
+            log(raw->usb_note().find("refused") == std::string::npos ? Level::info : Level::warn, "USB: " + raw->usb_note());
         if (!v.set_up)
             log(Level::warn, "the board is not set up: use \"Set up the board\" (configures the GPX2 and calibrates the LVDS link)");
         if (v.comparator_differs)
