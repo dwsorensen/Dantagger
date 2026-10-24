@@ -82,6 +82,8 @@ void write_run_sidecar(const std::string& run_path, const Response& before, cons
          << ",\n  \"divisions\": " << divisions << ",\n  \"ref_bits\": " << before.lvds.ref_bits
          << ",\n  \"stop_bits\": " << before.lvds.stop_bits << ",\n  \"coarse_tick_ns\": " << t.coarse_tick_ns
          << ",\n  \"lclkin_mhz\": " << before.lvds.lclkin_mhz() << ",\n  \"ddr\": " << (before.lvds.ddr ? "true" : "false")
+         << ",\n  \"record_format\": " << (result.compact ? 2 : 1) << ",\n  \"coarse_uncertainty_ticks\": "
+         << (result.compact ? kTimeMarkTicks + 16 : 0)
          << ",\n  \"bit_phase\": " << before.lvds.bit_phase() << ",\n  \"gpx_registers\": \""
          << hex_bytes(before.gpx.written.data(), kGpxRegisters) << "\",\n  \"lvds_phase\": " << before.lvds.phase_step()
          << ",\n  \"records\": " << result.records << ",\n  \"frames\": " << result.frames << ",\n  \"events\": "

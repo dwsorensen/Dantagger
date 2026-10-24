@@ -1,6 +1,7 @@
 // USB throughput of the TDC board under different D3XX buffering settings.
 //
 //   build/usb_bench [--serial S] [--seconds 2] [--usb 0,0 --usb 64,4096 ...] [--live] [--load N]
+//                   [--format 64|compact|both]
 //
 // For each --usb URBS,QUEUE (0,0 = the library defaults 8 and 256, what
 // TDC_Firmware's tools use; default: 0,0 then 64,4096) it opens the board
@@ -10,7 +11,9 @@
 // received rate is the link's ceiling and every received event is checked
 // against the pattern.  --live streams the real inputs instead (your signals,
 // triggers as the board has them).  --load N runs N busy threads meanwhile, to
-// reproduce a computer short of CPU.
+// reproduce a computer short of CPU.  --format: 64-bit records, compact
+// 4-byte records (release 3, at most 18 stop bits), or both one after the
+// other for each setting (default: both on release 3, else 64-bit).
 //
 // Needs the board configured and calibrated (Dantagger's setup).  It changes
 // nothing permanently: the GPX2 configuration is put back after the test
@@ -43,7 +46,7 @@ double cpu_seconds() {
     return static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) + 1e-6 * static_cast<double>(u.ru_utime.tv_usec + u.ru_stime.tv_usec);
 }
 
-int run_one(const std::string& serial, const Setting& s, double seconds, bool live, int load) {
+int run_one(const std::string& serial, const Setting& s, double seconds, bool live, int load, int format) {
     au2ft601::D3xxTransportOptions o;
     o.expected_fifo_clock = au2ft601::FifoClock::mhz66;
     o.in_urb_buffer_size = static_cast<std::uint32_t>(au2ft601::kFrameSize);   // as Dantagger: one FPGA frame
@@ -64,12 +67,21 @@ int run_one(const std::string& serial, const Setting& s, double seconds, bool li
         std::printf("the GPX2 is not configured: set the board up first (app: Set up the board)\n");
         return 1;
     }
+    const bool can_compact = tdcctl::compact_problem(st).empty();
+    if (format == 2 && !can_compact) {
+        std::printf("compact records: %s\n", tdcctl::compact_problem(st).c_str());
+        return 1;
+    }
+    std::vector<bool> formats;
+    if (format != 2) formats.push_back(false);
+    if (format == 2 || (format == 0 && can_compact)) formats.push_back(true);
     const auto original = st.gpx.written;
     const int ref_bits = st.lvds.ref_bits, stop_bits = st.lvds.stop_bits;
     const std::uint32_t want_ref = 0xF0CCAAU & ((1U << ref_bits) - 1U);
     const std::uint32_t want_stop = 0x0AACF0U & ((1U << stop_bits) - 1U);
     std::printf("%s, %d + %d-bit frames%s, LCLKIN %.4g MHz; %s for %.1f s%s\n",
-                st.design_version == tdcctl::kDesignVersionR2 ? "release 2" : "release 1", ref_bits, stop_bits,
+                st.design_version == tdcctl::kDesignVersionR3 ? "release 3"
+                : st.design_version == tdcctl::kDesignVersionR2 ? "release 2" : "release 1", ref_bits, stop_bits,
                 st.lvds.ddr ? " DDR" : " SDR", st.lvds.lclkin_mhz(), live ? "live inputs" : "test pattern", seconds,
                 load ? (", " + std::to_string(load) + " busy threads").c_str() : "");
     if (!live) {
@@ -88,42 +100,50 @@ int run_one(const std::string& serial, const Setting& s, double seconds, bool li
             volatile std::uint64_t x = 0;
             while (spin.load(std::memory_order_relaxed)) x = x + 1;
         });
-    std::uint64_t events = 0, bad = 0;
-    std::uint64_t per_channel[4] = {};
-    tdcctl::StreamResult result;
-    const double cpu0 = cpu_seconds();
-    {
-        tdcctl::LclkinScope lclk(session, true);
-        tdcctl::StreamRequest req;
-        req.duration_s = seconds;
-        result = session.stream(req, [&](std::uint64_t raw) {
-            if (raw >> 63) return;
-            ++events;
-            ++per_channel[(raw >> 61) & 3U];
-            if (!live && ((((raw >> 20) & 0xFFFFFFU) != want_ref) || ((raw & 0xFFFFFU) != want_stop))) ++bad;
-        });
-        lclk.off();
+    int failures = 0;
+    for (const bool compact : formats) {
+        std::uint64_t events = 0, bad = 0;
+        std::uint64_t per_channel[4] = {};
+        tdcctl::StreamResult result;
+        const double cpu0 = cpu_seconds();
+        {
+            tdcctl::LclkinScope lclk(session, true);
+            tdcctl::StreamRequest req;
+            req.duration_s = seconds;
+            req.compact = compact;
+            result = session.stream(req, [&](std::uint64_t raw) {
+                if (raw >> 63) return;
+                ++events;
+                ++per_channel[(raw >> 61) & 3U];
+                if (!live && ((((raw >> 20) & 0xFFFFFFU) != want_ref) || ((raw & 0xFFFFFU) != want_stop))) ++bad;
+            });
+            lclk.off();
+        }
+        const double cpu = cpu_seconds() - cpu0;
+        const double t = result.seconds > 0 ? result.seconds : seconds;
+        const std::uint64_t dropped = result.final_response ? result.final_response->stream.dropped : 0;
+        const double unit = compact ? 4.0 : 8.0;
+        std::printf("%s run %s%s: %.3f s, %llu %s = %.2f M/s (%.1f MB/s); events %.2f M/s "
+                    "(ch1 %.2f, ch2 %.2f, ch3 %.2f, ch4 %.2f M/s)\n",
+                    compact ? "compact" : "64-bit", result.pass ? "OK" : "FAILED ", result.pass ? "" : result.failure.c_str(),
+                    t, static_cast<unsigned long long>(result.records), compact ? "words" : "records",
+                    result.records / t * 1e-6, result.records * unit / t * 1e-6, events / t * 1e-6,
+                    per_channel[0] / t * 1e-6, per_channel[1] / t * 1e-6, per_channel[2] / t * 1e-6,
+                    per_channel[3] / t * 1e-6);
+        std::printf("FPGA dropped %llu events (%.1f %% of all)%s, pipeline depth %u, this process used %.0f %% of one core%s\n",
+                    static_cast<unsigned long long>(dropped), events + dropped ? 100.0 * dropped / (events + dropped) : 0.0,
+                    result.compact_invalid ? (", " + std::to_string(result.compact_invalid) + " invalid for compact").c_str() : "",
+                    result.pipeline_depth, 100.0 * cpu / t, load ? " (busy threads included)" : "");
+        if (!live) std::printf("test pattern: %llu events differ%s\n", static_cast<unsigned long long>(bad), bad ? "  <-- SAMPLING ERRORS" : " (OK)");
+        failures += result.pass && bad == 0 ? 0 : 1;
     }
-    const double cpu = cpu_seconds() - cpu0;
     spin = false;
     for (auto& t : busy) t.join();
     if (!live) {
         const auto r = session.gpx_configure(original);
         std::printf("GPX2 configuration restored: %s\n", tdcctl::status_name(r.status).c_str());
     }
-    const double t = result.seconds > 0 ? result.seconds : seconds;
-    const std::uint64_t dropped = result.final_response ? result.final_response->stream.dropped : 0;
-    std::printf("run %s%s: %.3f s, %llu records = %.2f M records/s (%.1f MB/s); events %.2f M/s "
-                "(ch1 %.2f, ch2 %.2f, ch3 %.2f, ch4 %.2f M/s)\n",
-                result.pass ? "OK" : "FAILED ", result.pass ? "" : result.failure.c_str(), t,
-                static_cast<unsigned long long>(result.records), result.records / t * 1e-6, result.records * 8.0 / t * 1e-6,
-                events / t * 1e-6, per_channel[0] / t * 1e-6, per_channel[1] / t * 1e-6, per_channel[2] / t * 1e-6,
-                per_channel[3] / t * 1e-6);
-    std::printf("FPGA dropped %llu events (%.1f %% of all), pipeline depth %u, this process used %.0f %% of one core%s\n",
-                static_cast<unsigned long long>(dropped), events + dropped ? 100.0 * dropped / (events + dropped) : 0.0,
-                result.pipeline_depth, 100.0 * cpu / t, load ? " (busy threads included)" : "");
-    if (!live) std::printf("test pattern: %llu events differ%s\n", static_cast<unsigned long long>(bad), bad ? "  <-- SAMPLING ERRORS" : " (OK)");
-    return result.pass && bad == 0 ? 0 : 1;
+    return failures;
 }
 
 }  // namespace
@@ -133,6 +153,7 @@ int main(int argc, char** argv) {
     double seconds = 2.0;
     bool live = false;
     int load = 0;
+    int format = 0;   // 0 both (compact only where possible), 1 64-bit, 2 compact
     std::vector<Setting> settings;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -140,6 +161,14 @@ int main(int argc, char** argv) {
         else if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (a == "--live") live = true;
         else if (a == "--load" && i + 1 < argc) load = std::atoi(argv[++i]);
+        else if (a == "--format" && i + 1 < argc) {
+            const std::string f = argv[++i];
+            format = f == "64" ? 1 : f == "compact" ? 2 : f == "both" ? 0 : -1;
+            if (format < 0) {
+                std::fprintf(stderr, "--format 64|compact|both\n");
+                return 2;
+            }
+        }
         else if (a == "--usb" && i + 1 < argc) {
             Setting s{};
             if (std::sscanf(argv[++i], "%d,%d", &s.urbs, &s.queue) != 2) {
@@ -148,7 +177,7 @@ int main(int argc, char** argv) {
             }
             settings.push_back(s);
         } else {
-            std::printf("usage: usb_bench [--serial S] [--seconds 2] [--usb URBS,QUEUE ...] [--live] [--load N]\n");
+            std::printf("usage: usb_bench [--serial S] [--seconds 2] [--usb URBS,QUEUE ...] [--live] [--load N] [--format 64|compact|both]\n");
             return a == "-h" || a == "--help" ? 0 : 2;
         }
     }
@@ -166,6 +195,6 @@ int main(int argc, char** argv) {
         }
     }
     int failures = 0;
-    for (const auto& s : settings) failures += run_one(serial, s, seconds, live, load);
+    for (const auto& s : settings) failures += run_one(serial, s, seconds, live, load, format);
     return failures ? 1 : 0;
 }

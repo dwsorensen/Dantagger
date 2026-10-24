@@ -1,7 +1,8 @@
 #pragma once
 
-// TDC firmware protocol (PROTOCOL.md; designs 0x54440001 = release 1 and
-// 0x54440002 = release 2, told apart by the response): command encoding,
+// TDC firmware protocol (PROTOCOL.md; designs 0x54440001 = release 1,
+// 0x54440002 = release 2 and 0x54440003 = release 3 (release 2 plus compact
+// records), told apart by the response): command encoding,
 // response decoding, the GPX2 configuration builder (with the same board
 // rules the FPGA enforces), event-record decoding and time unwrapping, and the
 // comparator unit conversions (unchanged from Comparator_Control's cmpctl).
@@ -53,29 +54,42 @@ enum class Status : std::uint32_t {
 
 constexpr std::uint32_t kDesignVersionR1 = 0x54440001;
 constexpr std::uint32_t kDesignVersionR2 = 0x54440002;
-constexpr std::uint32_t kDesignVersion = kDesignVersionR2;   // newest (the simulated FPGA's default)
-constexpr int kResponseFields = 111;              // release 2; release 1 sends 109 (the rest read 0)
+constexpr std::uint32_t kDesignVersionR3 = 0x54440003;
+constexpr std::uint32_t kDesignVersion = kDesignVersionR3;   // newest (the simulated FPGA's default)
+constexpr int kResponseFields = 113;              // release 3; release 2 sends 111, release 1 109 (the rest read 0)
+constexpr int kResponseFieldsR2 = 111;
 constexpr int kResponseFieldsR1 = 109;
 constexpr int kChannels = 4;
 constexpr int kGpxRegisters = 17;
 constexpr double kPhaseStepPs = 10000.0 / 560.0;  // MMCM fine-phase step: 1/56 of the 1 GHz VCO period (both releases)
 constexpr std::uint32_t kLinkTestMaxWindow = 100000000;
 constexpr std::size_t kMaxRecordsPerFrame = 503;
+// Compact records (release 3, PROTOCOL.md 3.4): START flag bit 0; DATA record
+// format 2; 1007 payload words per frame, PAD-filled.
+constexpr std::uint32_t kStartFlagCompact = 1;
+constexpr std::size_t kCompactWordsPerFrame = 1007;
+constexpr std::uint32_t kCompactPad = 0xFFFFFFFFU;
+// TIME markers come every 2^14 coarse ticks (all releases).  A compact event
+// carries no coarse time: the last marker's is up to this much (plus the
+// FPGA's 8-cycle hold) earlier than the event's capture.
+constexpr std::uint64_t kTimeMarkTicks = 16384;
 constexpr double kCoarseTickNsR1 = 10.0;          // release 1 coarse time: 100 MHz cycles
 
 // LVDS clocking of the loaded image (release 1: fixed; release 2: response
 // fields 108-110).  Times in the FPGA: coarse ticks = LINK_TEST cycles =
 // lclk_rx periods; a lane is sampled every sample_ps.
 struct LinkTiming {
-    std::uint32_t design{kDesignVersionR2};
+    std::uint32_t design{kDesignVersionR3};
     double lclk_max_mhz{250.0};        // LCLKIN at divider code 0
     double coarse_tick_ns{8.0};
     int phase_steps{224};              // LVDS_PHASE positions (0 .. phase_steps - 1)
     double sample_ps{2000.0};
 
     static LinkTiming release1() { return {kDesignVersionR1, 100.0, 10.0, 560, 10000.0}; }
-    bool release2() const { return design == kDesignVersionR2; }
+    // Release 2's clocking (fields 108-110, DDR): releases 2 and 3.
+    bool release2() const { return design == kDesignVersionR2 || design == kDesignVersionR3; }
     bool ddr_supported() const { return release2(); }
+    bool compact_supported() const { return design == kDesignVersionR3; }
     int max_bit_phase(int divider_code, bool ddr) const { return samples_per_bit(divider_code, ddr) - 1; }
     double lclkin_mhz(int divider_code) const { return lclk_max_mhz / (1 << divider_code); }
     // Samples the FPGA takes per GPX2 bit: release 1 one per 10 ns (SDR
@@ -226,6 +240,8 @@ struct StreamState {
     std::uint64_t stall_cycles{0};
     std::uint64_t rxf_tx_cycles{0};
     std::uint64_t run_id{0};
+    std::uint32_t compact_invalid{0};  // release 3: events the compact packer dropped (field 111)
+    int record_format{1};              // release 3: 1 64-bit, 2 compact, of the current or last run (field 112)
 
     bool capture_requested() const { return (flags & 1U) != 0; }
     bool draining() const { return (flags & 2U) != 0; }
@@ -292,7 +308,7 @@ std::string describe_gpx_config(const std::array<std::uint8_t, kGpxRegisters>& r
 
 // ---- Command frames ---------------------------------------------------------
 Frame encode_simple(Opcode opcode, std::uint64_t transaction);          // no payload
-Frame encode_start(std::uint64_t run_id, std::uint64_t transaction, std::uint32_t window_us);
+Frame encode_start(std::uint64_t run_id, std::uint64_t transaction, std::uint32_t window_us, bool compact = false);
 Frame encode_set_leds(std::uint64_t transaction, std::uint8_t mask);
 Frame encode_thresholds(std::uint64_t transaction, unsigned mask, const std::array<std::uint16_t, kChannels>& codes);
 Frame encode_hysteresis(std::uint64_t transaction, unsigned mask, const std::array<std::uint16_t, kChannels>& wipers);
@@ -309,6 +325,10 @@ Frame encode_link_test(std::uint64_t transaction, std::uint32_t window_cycles);
 // unambiguous (reference index long enough for the current LCLKIN, frame and
 // HIGH_RESOLUTION; min_ref_index_bits), otherwise what to change.
 std::string capture_problem(const Response& status, double refclk_hz = 8.0e6);
+// Empty if the image and the capture format in a STATUS response allow a
+// compact run (release 3, reference index 12 ... 24 bits, at most 18 stop
+// bits), otherwise why not.
+std::string compact_problem(const Response& status);
 // Stop-result width (14 ... 20) that holds `divisions` (REFCLK_DIVISIONS <= 2^bits - 1).
 int min_stop_bits(std::uint32_t divisions);
 
@@ -320,12 +340,52 @@ std::optional<Response> decode_response(const Frame& frame, std::string& error);
 struct DataFrame {
     std::uint64_t run_id{0};
     std::uint64_t sequence{0};
-    std::uint64_t records_before{0};
+    std::uint64_t records_before{0};   // compact: non-PAD words before this frame
     std::uint64_t timestamp{0};
-    std::vector<std::uint64_t> records;
+    int format{1};                     // 1: 64-bit records, 2: compact words
+    std::vector<std::uint64_t> records;   // format 1
+    std::vector<std::uint32_t> words;     // format 2: the payload words before the PAD tail
 };
-// Checks a CRC-valid DATA frame (header fields, length, zero padding).
+// Checks a CRC-valid DATA frame (header fields, length, zero padding; for
+// compact frames, that the PAD tail is only PAD).
 std::optional<DataFrame> decode_data_frame(const Frame& frame, std::string& error);
+
+// Compact words of one run (PROTOCOL.md 3.4) -> 64-bit records (3.3).  An
+// event gets the coarse time of the last marker in its low 16 bits (so the
+// 64-bit unwrapping rules hold) and its full 24-bit reference index.
+class CompactExpander {
+public:
+    void reset() { epoch_ = 0; epoch_valid_ = false; coarse_ = 0; }   // a new run
+    // Appends one frame's records to `out`; false (and `error`) if the words
+    // break the format (event before an EPOCH, EPOCH without its event, a
+    // marker split or incomplete, a stray HI/LO word, PAD inside the payload).
+    bool expand(const std::uint32_t* words, std::size_t n, std::vector<std::uint64_t>& out, std::string& error);
+
+private:
+    std::uint32_t epoch_{0};
+    bool epoch_valid_{false};
+    std::uint64_t coarse_{0};
+};
+
+// The FPGA's compact packer (tdc_engine.sv) in software, for the simulated
+// FPGA and tests: one call = one DATA frame build; records that do not fit
+// go to further frames.  Events whose stop result would read as a marker
+// word are dropped and counted.
+struct CompactFrame {
+    std::array<std::uint32_t, kCompactWordsPerFrame> words{};
+    std::size_t used{0};               // non-PAD words
+};
+class CompactPacker {
+public:
+    void reset() { epoch_ = 0; epoch_valid_ = false; invalid_ = 0; }   // a new run
+    void pack(const std::uint64_t* records, std::size_t n, std::vector<CompactFrame>& frames);
+    std::uint64_t invalid() const { return invalid_; }
+
+private:
+    std::uint32_t epoch_{0};
+    bool epoch_valid_{false};
+    std::uint64_t invalid_{0};
+};
 
 enum class MarkerType : int { start = 0, time = 1, overflow = 2, end = 3 };
 

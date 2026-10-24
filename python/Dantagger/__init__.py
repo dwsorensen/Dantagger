@@ -402,8 +402,11 @@ def createTimeTagger(serial="", resolution=Resolution.Standard, *, simulate=None
     no hardware) or 'fpga' (the protocol-level simulated FPGA).
     recalibrate: force the configure + calibrate step (also env DANTAGGER_RECALIBRATE=1).
     frame: (reference-index bits, stop bits) of the GPX2 LVDS frame; default: the
-    firmware release's policy (release 2: DDR, shortest safe frame, 6 + 18 bits at
-    250 MHz; release 1: 24 + 20 bits).  Also env DANTAGGER_FRAME=REF,STOP.
+    firmware release's policy (releases 2 and 3: DDR, 24 + 18 bits at 250 MHz;
+    release 1: 24 + 20 bits).  Also env DANTAGGER_FRAME=REF,STOP.
+    Release 3 sends compact 4-byte records whenever the frame allows them (12 to
+    24 reference-index bits, at most 18 stop bits): about twice the events over
+    USB.  Env DANTAGGER_COMPACT=0 turns them off, =1 requires them.
     """
     mode = _resolve_simulate(simulate)
     if mode == "signals":

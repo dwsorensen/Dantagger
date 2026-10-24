@@ -88,6 +88,11 @@ void board_setup_card(AppContext& ctx) {
     ImGui::PushFont(ui::fonts.mono);
     ImGui::TextWrapped("%s", v.capture.c_str());
     ImGui::PopFont();
+    ImGui::TextUnformatted("Records");
+    ImGui::SameLine(110);
+    ImGui::PushTextWrapPos(0);
+    ui::dim_text("%s", v.records.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::TextUnformatted("Frame policy");
     ImGui::SameLine(110);
     ImGui::PushTextWrapPos(0);
@@ -276,7 +281,7 @@ void page_tdc(AppContext& ctx, PagesState& s) {
         ImGui::PushTextWrapPos(0);
         ui::dim_text("For experiments: \"Set up the board\" applies the frame policy. Board rules always applied: LVDS "
                      "inputs, REFCLK from the LMK1D1204 (%.0f MHz, SW1 \"Int\"). %s",
-                     refclk * 1e-6, timing.release2() ? "Release 2: SDR or DDR." : "Release 1: SDR only.");
+                     refclk * 1e-6, timing.release2() ? "Releases 2 and 3: SDR or DDR." : "Release 1: SDR only.");
         ImGui::PopTextWrapPos();
         if (lock) ImGui::BeginDisabled();
         ImGui::PushItemWidth(110);

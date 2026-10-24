@@ -51,17 +51,19 @@ const char* kUsage =
     "  gpx-config [GPX OPTIONS]      reset, configure, read back, start the TDC-GPX2\n"
     "  gpx-readback | gpx-reset | gpx-init | gpx-results\n"
     "  lvds on|off [--div N] [--bit-phase P] [--sdo-taps a,b,c,d] [--frame-taps a,b,c,d]\n"
-    "                                LCLKIN = maximum / 2^N (release 2: 250/125/62.5/31.25 MHz,\n"
+    "                                LCLKIN = maximum / 2^N (releases 2, 3: 250/125/62.5/31.25 MHz,\n"
     "                                release 1: 100/50/25/12.5 MHz) and sampling settings\n"
-    "  phase STEP                    sampling phase (17.857 ps steps; release 2 0..223, release 1 0..559)\n"
+    "  phase STEP                    sampling phase (17.857 ps steps; releases 2, 3 0..223, release 1 0..559)\n"
     "  link-test [CYCLES]            count LVDS frames for a window (default 1 ms)\n"
     "  calibrate [GPX OPTIONS] [--div N] [--step N] [--window-us U]\n"
     "                                find the LVDS sampling point (bit phase and phase) with the\n"
     "                                GPX2 test pattern; LCLKIN divider N (default 0: fastest)\n"
     "Streaming mode:\n"
-    "  stream --out FILE [--duration S | --window-us N] [--refclk-hz F]\n"
-    "                                stream events to FILE (raw 8-byte records) and FILE.json\n"
-    "  count [SECONDS]               count rate per channel: a run of SECONDS (default 1,\n"
+    "  stream --out FILE [--duration S | --window-us N] [--refclk-hz F] [--compact]\n"
+    "                                stream events to FILE (raw 8-byte records) and FILE.json;\n"
+    "                                --compact: the board sends 4-byte records (release 3, at\n"
+    "                                most 18 stop bits), FILE still gets 8-byte records\n"
+    "  count [SECONDS] [--compact]   count rate per channel: a run of SECONDS (default 1,\n"
     "                                timed by the FPGA window), no file written\n"
     "  stop                          end a run left running\n"
     "Offline:\n"
@@ -73,7 +75,7 @@ const char* kUsage =
     "GPX OPTIONS: --refclk-hz F (default 8e6) --lsb-ps P (default 1) --ref-bits N --stop-bits N\n"
     "             --ddr | --sdr --channels 1234 --test-pattern --hires 0|1|2\n"
     "             --dv-adjust -160|0|160|320 --lvds-off\n"
-    "             Release 2 defaults: DDR, the smallest stop width that holds the LSB (18 bits\n"
+    "             Releases 2, 3 defaults: DDR, the smallest stop width that holds the LSB (18 bits\n"
     "             at 1 ps) and the smallest reference index that keeps times unambiguous at the\n"
     "             current LCLKIN (6 bits at 250 MHz DDR).  Release 1: SDR, 24 + 20 bits.\n"
     "CH is 1-4, a list such as 1,3, or all.\n"
@@ -472,7 +474,8 @@ private:
             const auto report = session_->sync();
             const auto& t = report.status.lvds.timing;
             say("Connected to FT601 " + serial + " (USB " + usb + "); TDC firmware " + hex(report.status.design_version, 8) +
-                (t.release2() ? " (release 2, LCLKIN up to " + fixed(t.lclk_max_mhz, 0) + " MHz, SDR/DDR)" : " (release 1)"));
+                (t.compact_supported() ? " (release 3, LCLKIN up to " + fixed(t.lclk_max_mhz, 0) + " MHz, SDR/DDR, compact records)"
+                 : t.release2() ? " (release 2, LCLKIN up to " + fixed(t.lclk_max_mhz, 0) + " MHz, SDR/DDR)" : " (release 1)"));
             if (report.stale_frames != 0 || report.discarded_bytes != 0 || report.attempts > 1)
                 say("  cleared leftovers from an earlier session: " + std::to_string(report.stale_frames) + " frames, " +
                     std::to_string(report.discarded_bytes) + " stray bytes");
@@ -684,6 +687,7 @@ private:
         if (auto v = a.value("--duration")) req.duration_s = parse_number(*v, "duration");
         if (auto v = a.value("--window-us")) req.window_us = static_cast<std::uint32_t>(parse_integer(*v, "window", 1, 4294967295L));
         if (auto v = a.value("--refclk-hz")) refclk_hz = parse_number(*v, "REFCLK frequency");
+        req.compact = a.flag("--compact");
         a.done();
         if (!out) throw ArgumentError("stream needs --out FILE");
         if (req.duration_s <= 0 && req.window_us == 0 && !serving_)
@@ -692,6 +696,8 @@ private:
         if (!before.lvds.format_valid || !before.gpx.verified())
             throw ArgumentError("the GPX2 is not configured and verified (run gpx-config, then calibrate)");
         if (const auto why = capture_problem(before, refclk_hz); !why.empty()) throw ArgumentError(why);
+        if (req.compact)
+            if (const auto why = compact_problem(before); !why.empty()) throw ArgumentError(why);
         std::ofstream file(*out, std::ios::binary);
         if (!file) throw ArgumentError("cannot write " + *out);
         LclkinScope lclk(*session_, true);
@@ -762,6 +768,7 @@ private:
     // to a channel, so with drops the rates are lower bounds.
     bool count(Args& a) {
         double seconds = 1.0;
+        const bool compact = a.flag("--compact");
         if (a.rest().size() >= 2) seconds = parse_number(a.rest()[1], "count time");
         a.done();
         if (!(seconds >= 0.001 && seconds <= 60.0)) throw ArgumentError("count time must be 0.001 ... 60 s");
@@ -769,7 +776,10 @@ private:
         if (!before.lvds.format_valid || !before.gpx.verified())
             throw ArgumentError("the GPX2 is not configured and verified (run gpx-config, then calibrate)");
         if (const auto why = capture_problem(before); !why.empty()) throw ArgumentError(why);
+        if (compact)
+            if (const auto why = compact_problem(before); !why.empty()) throw ArgumentError(why);
         StreamRequest req;
+        req.compact = compact;
         req.window_us = static_cast<std::uint32_t>(std::llround(seconds * 1e6));
         req.duration_s = seconds + 5.0;   // host-timed STOP only if the window never ends the run
         LclkinScope lclk(*session_, true);

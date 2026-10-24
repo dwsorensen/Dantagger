@@ -68,6 +68,8 @@ struct SyncReport {
 struct StreamRequest {
     std::uint32_t window_us{0};        // 0: until STOP (abort flag or duration)
     double duration_s{0.0};            // host-timed STOP after this long (0: none)
+    bool compact{false};               // compact records (release 3, compact_problem() empty); the
+                                       // sinks still get 64-bit records (CompactExpander)
 };
 
 struct StreamProgress {
@@ -84,9 +86,11 @@ struct StreamResult {
     bool by_window{false};             // ended by the FPGA window (RUN_COMPLETE)
     std::uint64_t run_id{0};
     std::uint64_t frames{0};
-    std::uint64_t records{0};
+    std::uint64_t records{0};          // as the FPGA counts them: compact runs count payload words
     std::array<std::uint64_t, kChannels> events{};
     std::uint64_t dropped_marked{0};   // sum of OVERFLOW marker counts (each saturates at 4095)
+    bool compact{false};
+    std::uint32_t compact_invalid{0};  // events the FPGA's compact packer dropped (final response)
     double seconds{0.0};
     std::optional<Response> start_ack;
     std::optional<Response> final_response;

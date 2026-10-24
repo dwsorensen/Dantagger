@@ -1,8 +1,17 @@
 #pragma once
 
-// The TDC board (TDC_Firmware release 1, design 0x54440001, or release 2,
-// 0x54440002; told apart by its responses) as a Dantagger backend, over the
-// FT601 (D3XX) or tdcctl's simulated FPGA.
+// The TDC board (TDC_Firmware release 1, design 0x54440001, release 2,
+// 0x54440002, or release 3, 0x54440003; told apart by its responses) as a
+// Dantagger backend, over the FT601 (D3XX) or tdcctl's simulated FPGA.
+//
+// Record format (user, 2026-10-22: "Dantagger should speak release 3"): with
+// release 3, runs use compact 4-byte records whenever the capture format
+// allows them (tdcctl::compact_problem; the release-2 policy frame 24 + 18
+// does), which doubles what the USB link carries; TdcOptions::compact (env
+// DANTAGGER_COMPACT=0/1) can turn them off or require them.  The session
+// expands them to 64-bit records as they arrive, so taps (the recorder) and
+// the decoder see one format; events then carry the last marker's coarse
+// time, which the decoder allows for (coarse_uncertainty_ps).
 //
 // Open lifecycle (user, 2026-10-21; SetupMode::automatic, the Python
 // library): the first open after the board is plugged in configures the
@@ -17,7 +26,7 @@
 // SetupMode::none (the app) changes nothing on open; the app offers the same
 // setup as a button.  Neither mode touches the comparator (user, 2026-10-22).
 //
-// Frame policy (user, 2026-10-22): release 2 = 24 + 18 bits (a 2.1 s
+// Frame policy (user, 2026-10-22): releases 2 and 3 = 24 + 18 bits (a 2.1 s
 // reference-index wrap: times unwrap safely at any count rate; 11.9 M
 // events/s per channel at 250 MHz DDR), DDR unless the last calibration was
 // made in SDR; release 1 = SDR, 24 + 20 bits (the format proven on the board).
@@ -94,6 +103,10 @@ struct TdcOptions {
     // the open falls back to the defaults (usb_note() says so).
     int usb_urb_count{64};
     int usb_queue_buffers{4096};
+    // Compact records: -1 automatic (release 3 and a capture format that
+    // allows them), 0 never, 1 required (a run fails otherwise).  Env
+    // DANTAGGER_COMPACT=0/1 overrides.
+    int compact{-1};
 };
 
 // The GPX2 configuration of the frame policy above, for an image with
@@ -101,8 +114,13 @@ struct TdcOptions {
 tdcctl::GpxConfig policy_gpx_config(const tdcctl::LinkTiming& timing, double refclk_hz, int high_resolution,
                                     int ref_bits_override = 0, int stop_bits_override = 0, bool ddr = true);
 
-// "Release 2 (design 0x54440002)" or "Release 1 (...)" or "unknown design ...".
+// "Release 3 (design 0x54440003)", "Release 2 (...)", "Release 1 (...)" or "unknown design ...".
 std::string release_name(std::uint32_t design_version);
+// The records a run would use with this STATUS and TdcOptions::compact mode:
+// "compact 4-byte records" or "64-bit records (why)".
+std::string describe_records(const tdcctl::Response& status, int compact_mode = -1);
+// Whether a run uses compact records (throws DeviceError if mode 1 cannot).
+bool run_uses_compact(const tdcctl::Response& status, int compact_mode);
 // One line: frame widths, DDR/SDR, LCLKIN and the per-channel readout limit of a STATUS.
 std::string describe_capture(const tdcctl::Response& status);
 // Events per second per channel the GPX2 can read out with this capture format (0 if not configured).
@@ -136,6 +154,7 @@ public:
     // USB buffering in effect ("64 x 4 KiB in flight, 4096 x 4 KiB queue"), and why if it is not the one asked for.
     const std::string& usb_note() const { return usb_note_; }
     bool simulated() const { return fake_ != nullptr; }
+    int compact_mode() const { return compact_mode_; }   // TdcOptions::compact after DANTAGGER_COMPACT
 
     // ---- the app (only while no run streams: Tagger::exclusive) ------------------
     tdcctl::Session& session() { return *session_; }
@@ -189,6 +208,7 @@ private:
     double refclk_hz_{8.0e6};
     int ref_override_{0}, stop_override_{0};
     int high_resolution_{0};       // wanted HIGH_RESOLUTION code (setHighResolution)
+    int compact_mode_{-1};         // TdcOptions::compact after the env override
     bool open_{false};
 
     mutable std::mutex state_mu_;

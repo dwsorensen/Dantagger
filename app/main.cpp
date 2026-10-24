@@ -557,7 +557,7 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
     step("connect to the simulated FPGA (nothing applied)", [=, &t] {
         if (!(idle() && v().state && t.frames > 5)) return false;
         t.expect(!v().set_up, "a fresh simulated board is not set up");
-        t.expect(v().release.find("Release 2") == 0, "release shown: " + v().release);
+        t.expect(v().release.find("Release 3") == 0, "release shown: " + v().release);
         // Opening applied nothing: the comparator still has the power-up codes.
         t.expect(v().state->board.dac_codes[0] == 0, "connect changed no trigger");
         return true;
@@ -566,6 +566,7 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
         if (t.frames == 1) a.dev.setup(false);
         if (t.frames < 3 || !idle()) return false;
         t.expect(v().set_up, "configured and calibrated");
+        t.expect(v().records.find("compact") == 0, "runs use compact records: " + v().records);
         t.expect(v().capture.find("24 + 18-bit frames (42 bits), DDR at LCLKIN 250 MHz: at most 11.90 M") == 0,
                  "release-2 frame policy: " + v().capture);
         t.expect(v().policy_frame, "the policy configuration is in use");

@@ -1,6 +1,6 @@
 # Dantagger (unified): agent instructions and project record
 
-Last updated: 2026-10-22
+Last updated: 2026-10-23
 
 Read this whole file before working here, and keep it current in the same
 change as the work (user instructions, decisions, status, blockers).
@@ -73,6 +73,15 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   RGBA at 16-256 px; Pillow if available, else a pure-Python decoder that
   matches it); the app sets it on its main window and on measurements in
   their own windows; X11 class `Dantagger`. Replace the file to change it.
+- 2026-10-22: "make that firmware change. Package it into release 3 and make
+  sure it's super safe for my board" (compact 4-byte records), then "one
+  thread receiving data and the other processing it" (done first). Answers:
+  **`../FPGA/TDC_Firmware` is "firmly in-limits"** (editable; its released
+  folders stay frozen); freeze Release 2 first and record the day's hardware
+  results; **"Dantagger should speak release 3, don't worry about the older
+  libraries"**; commit at the end. The board may be used for commands when
+  the user says so ("You can use the board again"); loading the FPGA stays
+  the user's.
 - Carried over from both projects: hardware access is the user's (do not
   load the FPGA, run commands on the board only when asked); commit only when
   asked; one heavy job at a time (N95, 4 cores, 7.7 GB, shared machine; no
@@ -158,17 +167,35 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   (~225 MB/s, test pattern; 58 M pattern events, 0 wrong). Next limit: the
   engine thread (~35-38 M/s estimated).
 
+- **Release 3 compact records (2026-10-22).** TDC_Firmware PROTOCOL.md 3.4:
+  START flag bit 0, 4-byte words (event = stop 18 | channel 2 | ref low 12;
+  EPOCH word = ref bits 23:12 when they change; markers HEAD/HI/LO; PAD to
+  1007 words per frame). `tdcctl::Session::stream_batches` expands them
+  (`CompactExpander`) to 64-bit records as they arrive (an event gets the
+  last marker's coarse time), so the decoder, taps, recorder files and old
+  tools see one format; `DecoderConfig::coarse_uncertainty_ps` (2^14 + 16
+  ticks) widens the wrap budget and the watermark margin; sidecars carry
+  `record_format` / `coarse_uncertainty_ticks` for the file backend.
+  `TdcBackend` uses compact records automatically when
+  `tdcctl::compact_problem` allows (release 3, 12-24 index bits, <= 18 stop
+  bits; the 24 + 18 policy does); `TdcOptions::compact` / env
+  `DANTAGGER_COMPACT=0|1`. `CompactPacker` = the FPGA packer in software
+  (FakeFpga, tests; `rtl_frames` checks it word for word against RTL frames).
+  Release 3 shares release 2's state file (same receive path). The app's TDC
+  page shows the record format.
+
 ## Status (2026-10-22)
 
 | Part | State |
 |---|---|
 | Copy, provenance, build (`build.py`) | Done; `docs/PROVENANCE.md`, `docs/copied_sha256.txt` |
-| Host library tests (TDC_Firmware) | 146 checks PASS (also ASan/UBSan) |
-| Core C++ tests | 4,450,637 checks PASS (also ASan/UBSan): release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
+| Host library tests (TDC_Firmware) | 166 checks PASS (also ASan/UBSan), with compact records (packer/expander round trip, bad streams, frames, FakeFpga runs, refusals) |
+| Core C++ tests | 4,450,725 checks PASS (also ASan/UBSan): release-3 (compact and 64-bit), release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
 | Python tests | 27 PASS, bit-exact against Swabian (oracle) |
 | Benchmarks | as SDE/Dantagger within noise: end to end tomography set 55-59 M tags/s, HistogramND 360-372, decoder 85-99 M records/s (noisy) |
 | App | `build/app/dantagger`; `--selftest` 26 steps PASS (3 runs), screenshots; `--snapshot` works against the simulator |
-| Hardware | **Nothing tested on the board** (release 2 not loaded yet; SDE/Dantagger never ran on hardware) |
+| Hardware | Release 2 on the board 2026-10-22: calibrated 250 MHz DDR, link ~28 M records/s, 23.35 M tags/s live with 0 dropped (TDC_Firmware `project_1/results/2026-10-22-release2-hw/`) |
+| Release 3 | **Built and verified 2026-10-23, packaged** in TDC_Firmware `releases/release-3/` (tag `release-3`; BIN `ecc9ff7f…bad97f`): every build gate, full bench, RTL -> host cross-check with `build/rtl_frames` (271 frames, 33 compact, 0 failures), mutation 67/67. Host support here. **Not yet on the board** (open item 8) |
 
 ## Open items (need the user or hardware)
 
@@ -191,6 +218,9 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
    reinstall it from here (`tools/install_timetagger_hook.py`) only when asked.
 6. Separate OS windows were checked only hidden (self-test); look at them on
    the desktop (XWayland).
+8. Release 3 on the board: TDC_Firmware `project_1/README_HW_TEST_R3.md`
+   (load to RAM, set up as release 2, `usb_bench --format both`, a compact
+   stream, real signals; `DANTAGGER_COMPACT=0` falls back to 64-bit).
 
 ## How to work here
 
@@ -202,7 +232,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   folder under DIR, so it never touches the user's settings.
 - Tests that run SDE scripts use `PYTHONDONTWRITEBYTECODE=1` so nothing is
   written into SDE.
-- Do not change `../FPGA/TDC_Firmware` or `../SDE/Dantagger`.
+- Do not change `../SDE/Dantagger`. `../FPGA/TDC_Firmware` may be changed
+  (since 2026-10-22), never its `releases/` folders.
 
 ## Lessons
 
@@ -213,6 +244,15 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   locals; members alias the histogram writes.
 - 2026-10-22: the decoder benchmark varies by ~15 % run to run on this PC;
   compare several runs before calling a regression.
+- 2026-10-22: a record without its own coarse time (compact) must be
+  anchored at the latest coarse time it could have, not the marker's: with
+  latency jitter an earlier event can arrive after a later one and land before
+  the run's base.
+- 2026-10-22: `last_status()` during a run is the pre-START STATUS; check what
+  a run did (record format, counts) after it ends.
+- 2026-10-22: a Vivado build here can be killed by Claude Code's low-memory
+  reaper (swap nearly full with the user's programs open); it is not a build
+  failure. Check `free -m` first and do not restart it without asking.
 
 ## Change log
 
@@ -234,3 +274,10 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   GPX2 inputs default to 24 + 18; tests (policy cases, 6-bit override cases,
   fallback survives power cycles and a release-1 session); the tdcctl part
   of the procedure rehearsed on the simulated FPGA; `docs/HARDWARE_TEST_R2.md`.
+- 2026-10-22: Release 3 host support: compact records (protocol, session
+  expansion, FakeFpga packer, decoder margin, sidecar keys, backend policy,
+  tdcctl `--compact`, usb_bench `--format`, app records line, rtl_frames,
+  tests); release 3 shares release 2's state file.
+- 2026-10-23: Release 3 verified and packaged in TDC_Firmware (build, full
+  bench, rtl_frames cross-check, mutation 67/67; `releases/release-3/`);
+  hardware procedure TDC_Firmware `project_1/README_HW_TEST_R3.md`.

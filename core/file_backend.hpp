@@ -33,6 +33,8 @@ struct SavedStreamInfo {
     int high_resolution{0};
     double coarse_tick_ns{10.0};
     double lclkin_mhz{100.0};
+    int record_format{1};              // how the board sent it (2: compact, release 3); the file holds 64-bit records
+    std::uint64_t coarse_uncertainty_ticks{0};   // compact: events carry the last marker's coarse time
     std::uint64_t records{0};          // from the file size
     std::array<double, kNumChannels> trigger_v{};
     std::array<double, kNumChannels> hysteresis_ohm{};

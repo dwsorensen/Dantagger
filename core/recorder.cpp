@@ -1,5 +1,6 @@
 #include "recorder.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -200,6 +201,14 @@ void StreamRecorder::write_sidecar() {
     const RunInfo first = runs_.empty() ? RunInfo{} : runs_.front();
     std::array<unsigned long long, kNumChannels> events{};
     for (int c = 0; c < kNumChannels; ++c) events[static_cast<std::size_t>(c)] = p_.events[static_cast<std::size_t>(c)];
+    // The file always holds 64-bit records; runs the board sent compact
+    // (release 3) have events with the last marker's coarse time.
+    int record_format = 1;
+    unsigned long long coarse_uncertainty = 0;
+    for (const auto& r : runs_) {
+        record_format = std::max(record_format, r.record_format);
+        coarse_uncertainty = std::max<unsigned long long>(coarse_uncertainty, r.coarse_uncertainty_ticks);
+    }
     char num[64];
     auto f = [&](double v) {
         std::snprintf(num, sizeof num, "%.10g", v);
@@ -210,7 +219,8 @@ void StreamRecorder::write_sidecar() {
          << ",\n  \"divisions\": " << first.divisions << ",\n  \"ref_bits\": " << first.ref_bits
          << ",\n  \"stop_bits\": " << first.stop_bits << ",\n  \"coarse_tick_ns\": " << f(first.coarse_tick_ns)
          << ",\n  \"lclkin_mhz\": " << f(first.lclkin_mhz) << ",\n  \"ddr\": " << (first.ddr ? "true" : "false")
-         << ",\n  \"high_resolution\": " << first.high_resolution << ",\n  \"bit_phase\": " << first.bit_phase
+         << ",\n  \"high_resolution\": " << first.high_resolution << ",\n  \"record_format\": " << record_format
+         << ",\n  \"coarse_uncertainty_ticks\": " << coarse_uncertainty << ",\n  \"bit_phase\": " << first.bit_phase
          << ",\n  \"gpx_registers\": \"" << hex(first.gpx_registers) << "\",\n  \"lvds_phase\": " << first.lvds_phase
          << ",\n  \"trigger_v\": " << array4(first.trigger_v, "%.5f") << ",\n  \"hysteresis_ohm\": "
          << array4(first.hysteresis_ohm, "%.1f") << ",\n  \"channel_mask\": " << opt_.channel_mask
@@ -219,7 +229,8 @@ void StreamRecorder::write_sidecar() {
          << ",\n  \"lost_on_host\": " << p_.lost << ",\n  \"seconds\": " << f(p_.seconds)
          << ",\n  \"limit_reached\": " << (p_.limit_reached ? "true" : "false") << ",\n  \"runs\": [";
     for (std::size_t i = 0; i < runs_.size(); ++i)
-        side << (i ? "," : "") << "\n    {\"run_id\": " << runs_[i].run_id << ", \"trigger_v\": " << array4(runs_[i].trigger_v, "%.5f")
+        side << (i ? "," : "") << "\n    {\"run_id\": " << runs_[i].run_id << ", \"record_format\": " << runs_[i].record_format
+             << ", \"trigger_v\": " << array4(runs_[i].trigger_v, "%.5f")
              << ", \"hysteresis_ohm\": " << array4(runs_[i].hysteresis_ohm, "%.1f") << "}";
     side << "\n  ],\n  \"pass\": " << (p_.error.empty() && p_.lost == 0 ? "true" : "false") << ",\n  \"failure\": \""
          << escape(p_.error) << "\"\n}\n";

@@ -108,6 +108,7 @@ public:
         bool set_up{false};             // configured + calibrated (state file)
         std::string release;            // "Release 2 (design 0x54440002)"
         std::string capture;            // frames, DDR/SDR, LCLKIN, readout limit
+        std::string records;            // compact or 64-bit records for runs (release 3)
         bool policy_frame{false};       // the GPX2 has the frame policy's configuration
         std::string policy_text;        // what the policy configuration is
         bool streaming{false};

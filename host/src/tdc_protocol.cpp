@@ -161,6 +161,16 @@ int min_ref_index_bits(const LinkTiming& timing, int divider_code, bool ddr, int
     return 0;
 }
 
+std::string compact_problem(const Response& st) {
+    const auto& l = st.lvds;
+    if (!l.timing.compact_supported()) return "compact records need TDC firmware release 3";
+    if (!l.format_valid) return "no capture format (configure the GPX2 first)";
+    if (l.ref_bits < 12 || l.ref_bits > 24 || l.stop_bits > 18)
+        return "compact records need a 12- to 24-bit reference index and at most 18 stop bits (the GPX2 has " +
+               std::to_string(l.ref_bits) + " + " + std::to_string(l.stop_bits) + ")";
+    return {};
+}
+
 int min_stop_bits(std::uint32_t divisions) {
     for (int bits = 14; bits <= 20; bits += 2)
         if (divisions <= (1U << static_cast<unsigned>(bits)) - 1U) return bits;
@@ -189,8 +199,8 @@ std::string capture_problem(const Response& st, double refclk_hz) {
 // ---------------------------------------------------------------------------
 Frame encode_simple(Opcode opcode, std::uint64_t transaction) { return encode(opcode, 0, transaction, {}); }
 
-Frame encode_start(std::uint64_t run_id, std::uint64_t transaction, std::uint32_t window_us) {
-    return encode(Opcode::start, run_id, transaction, {window_us, 0});
+Frame encode_start(std::uint64_t run_id, std::uint64_t transaction, std::uint32_t window_us, bool compact) {
+    return encode(Opcode::start, run_id, transaction, {window_us, compact ? kStartFlagCompact : 0U});
 }
 
 Frame encode_set_leds(std::uint64_t transaction, std::uint8_t mask) {
@@ -285,10 +295,10 @@ std::optional<Response> decode_response(const Frame& frame, std::string& error) 
         return std::nullopt;
     }
     const std::uint32_t length = header.valid_payload_length;
-    if (length != 4U * kResponseFields && length != 4U * kResponseFieldsR1) {
+    if (length != 4U * kResponseFields && length != 4U * kResponseFieldsR2 && length != 4U * kResponseFieldsR1) {
         error = "response payload length " + std::to_string(length) + " (expected " +
-                std::to_string(4 * kResponseFieldsR1) + " or " + std::to_string(4 * kResponseFields) +
-                "; is the TDC firmware image loaded?)";
+                std::to_string(4 * kResponseFieldsR1) + ", " + std::to_string(4 * kResponseFieldsR2) + " or " +
+                std::to_string(4 * kResponseFields) + "; is the TDC firmware image loaded?)";
         return std::nullopt;
     }
     if (header.payload_offset != 0 || header.seed != 0) {
@@ -321,11 +331,13 @@ std::optional<Response> decode_response(const Frame& frame, std::string& error) 
         return std::nullopt;
     }
     r.design_version = f[1];
-    const bool r2 = r.design_version == kDesignVersionR2;
-    if (!(r2 && length == 4U * kResponseFields) && !(r.design_version == kDesignVersionR1 && length == 4U * kResponseFieldsR1)) {
+    const bool r3 = r.design_version == kDesignVersionR3;
+    const bool r2 = r.design_version == kDesignVersionR2 || r3;   // release 2 clocking fields
+    if (!(r3 && length == 4U * kResponseFields) && !(r.design_version == kDesignVersionR2 && length == 4U * kResponseFieldsR2) &&
+        !(r.design_version == kDesignVersionR1 && length == 4U * kResponseFieldsR1)) {
         error = "unexpected FPGA design version " + hex(r.design_version, 8) + " with a " + std::to_string(length) +
-                "-byte response (expected " + hex(kDesignVersionR1, 8) + " / 436 or " + hex(kDesignVersionR2, 8) +
-                " / 444, TDC firmware release 1 or 2)";
+                "-byte response (expected " + hex(kDesignVersionR1, 8) + " / 436, " + hex(kDesignVersionR2, 8) +
+                " / 444 or " + hex(kDesignVersionR3, 8) + " / 452, TDC firmware release 1, 2 or 3)";
         return std::nullopt;
     }
     r.fault_bits = f[2];
@@ -386,7 +398,7 @@ std::optional<Response> decode_response(const Frame& frame, std::string& error) 
             error = "release-2 clocking fields 108-110 are invalid";
             return std::nullopt;
         }
-        l.timing = LinkTiming{kDesignVersionR2, f[108] / 1000.0, f[109] / 1000.0, static_cast<int>(steps),
+        l.timing = LinkTiming{r.design_version, f[108] / 1000.0, f[109] / 1000.0, static_cast<int>(steps),
                               f[109] / static_cast<double>(per_cycle)};
     } else {
         l.timing = LinkTiming::release1();
@@ -415,6 +427,14 @@ std::optional<Response> decode_response(const Frame& frame, std::string& error) 
     st.stall_cycles = u64(102);
     st.rxf_tx_cycles = u64(104);
     st.run_id = u64(106);
+    if (r3) {
+        if (f[112] != 1 && f[112] != 2) {
+            error = "release-3 record format field 112 is " + std::to_string(f[112]);
+            return std::nullopt;
+        }
+        st.compact_invalid = f[111];
+        st.record_format = static_cast<int>(f[112]);
+    }
     error.clear();
     return r;
 }
@@ -429,11 +449,37 @@ std::optional<DataFrame> decode_data_frame(const Frame& frame, std::string& erro
         error = "not a DATA frame";
         return std::nullopt;
     }
-    if (h.pattern_or_opcode != 1 || h.seed != 0 || h.flags_or_status != 0) {
+    if ((h.pattern_or_opcode != 1 && h.pattern_or_opcode != 2) || h.seed != 0 || h.flags_or_status != 0) {
         error = "DATA header: record format " + std::to_string(h.pattern_or_opcode) + ", reserved words nonzero";
         return std::nullopt;
     }
     const std::uint32_t len = h.valid_payload_length;
+    if (h.pattern_or_opcode == 2) {   // compact (release 3): 1007 words, PAD tail
+        if (len != 4U * kCompactWordsPerFrame) {
+            error = "compact DATA payload length " + std::to_string(len);
+            return std::nullopt;
+        }
+        DataFrame d;
+        d.run_id = h.run_id;
+        d.sequence = h.sequence_or_transaction;
+        d.records_before = h.payload_offset;
+        d.timestamp = h.timestamp;
+        d.format = 2;
+        d.words.reserve(kCompactWordsPerFrame);
+        std::size_t w = 0;
+        for (; w < kCompactWordsPerFrame; ++w) {
+            const std::uint32_t x = le32(frame, au2ft601::kHeaderSize + 4 * w);
+            if (x == kCompactPad) break;
+            d.words.push_back(x);
+        }
+        for (; w < kCompactWordsPerFrame; ++w)
+            if (le32(frame, au2ft601::kHeaderSize + 4 * w) != kCompactPad) {
+                error = "compact DATA word " + std::to_string(w) + " after the PAD tail";
+                return std::nullopt;
+            }
+        error.clear();
+        return d;
+    }
     if (len == 0 || len % 8 != 0 || len > kMaxRecordsPerFrame * 8) {
         error = "DATA payload length " + std::to_string(len);
         return std::nullopt;
@@ -457,6 +503,105 @@ std::optional<DataFrame> decode_data_frame(const Frame& frame, std::string& erro
     }
     error.clear();
     return d;
+}
+
+bool CompactExpander::expand(const std::uint32_t* w, std::size_t n, std::vector<std::uint64_t>& out,
+                             std::string& error) {
+    std::size_t i = 0;
+    while (i < n) {
+        const std::uint32_t x = w[i];
+        if ((x >> 26U) != 0x3FU) {   // event
+            if (!epoch_valid_) {
+                error = "compact event before any EPOCH word";
+                return false;
+            }
+            const std::uint64_t ref = (static_cast<std::uint64_t>(epoch_) << 12U) | (x & 0xFFFU);
+            out.push_back((static_cast<std::uint64_t>((x >> 12U) & 3U) << 61U) | ((coarse_ & 0xFFFFU) << 44U) |
+                          (ref << 20U) | (x >> 14U));
+            ++i;
+            continue;
+        }
+        switch ((x >> 24U) & 3U) {
+            case 0:   // EPOCH: its event follows in this frame
+                if ((x & 0xFFF000U) != 0) {
+                    error = "compact EPOCH word with reserved bits set";
+                    return false;
+                }
+                if (i + 1 >= n || (w[i + 1] >> 26U) == 0x3FU) {
+                    error = "compact EPOCH word not followed by its event";
+                    return false;
+                }
+                epoch_ = x & 0xFFFU;
+                epoch_valid_ = true;
+                ++i;
+                break;
+            case 3: {   // HEAD, HI, LO
+                const std::uint32_t type = (x >> 21U) & 7U;
+                if (x == kCompactPad || type > 3 || (x & 0x1FFU) != 0) {
+                    error = "bad compact marker word";
+                    return false;
+                }
+                if (i + 2 >= n || (w[i + 1] >> 24U) != 0xFDU || (w[i + 2] >> 24U) != 0xFEU) {
+                    error = "compact marker without its HI and LO words";
+                    return false;
+                }
+                coarse_ = (static_cast<std::uint64_t>(w[i + 1] & 0xFFFFFFU) << 24U) | (w[i + 2] & 0xFFFFFFU);
+                out.push_back((1ULL << 63U) | (static_cast<std::uint64_t>(type) << 60U) |
+                              (static_cast<std::uint64_t>((x >> 9U) & 0xFFFU) << 48U) | coarse_);
+                i += 3;
+                break;
+            }
+            default:
+                error = "compact HI/LO word without a HEAD";
+                return false;
+        }
+    }
+    return true;
+}
+
+void CompactPacker::pack(const std::uint64_t* records, std::size_t n, std::vector<CompactFrame>& frames) {
+    std::size_t i = 0;
+    const std::size_t first = frames.size();
+    frames.emplace_back();
+    while (i < n) {
+        CompactFrame* f = &frames.back();
+        const std::uint64_t r = records[i];
+        const std::size_t room = kCompactWordsPerFrame - f->used;
+        if ((r >> 63U) != 0) {
+            if (room < 3) {
+                frames.emplace_back();
+                continue;
+            }
+            f->words[f->used++] = 0xFF000000U | (static_cast<std::uint32_t>((r >> 60U) & 7U) << 21U) |
+                                  (static_cast<std::uint32_t>((r >> 48U) & 0xFFFU) << 9U);
+            f->words[f->used++] = 0xFD000000U | static_cast<std::uint32_t>((r >> 24U) & 0xFFFFFFU);
+            f->words[f->used++] = 0xFE000000U | static_cast<std::uint32_t>(r & 0xFFFFFFU);
+            ++i;
+            continue;
+        }
+        const auto stop = static_cast<std::uint32_t>(r & 0xFFFFFU);
+        if ((stop >> 18U) != 0 || (stop >> 12U) == 0x3FU) {   // would read as a marker word
+            ++invalid_;
+            ++i;
+            continue;
+        }
+        const auto epoch = static_cast<std::uint32_t>((r >> 32U) & 0xFFFU);
+        const bool need_epoch = !epoch_valid_ || epoch != epoch_;
+        if (room < (need_epoch ? 2U : 1U)) {
+            frames.emplace_back();
+            continue;
+        }
+        if (need_epoch) {
+            f->words[f->used++] = 0xFC000000U | epoch;
+            epoch_ = epoch;
+            epoch_valid_ = true;
+        }
+        f->words[f->used++] = (stop << 14U) | (static_cast<std::uint32_t>((r >> 61U) & 3U) << 12U) |
+                              static_cast<std::uint32_t>((r >> 20U) & 0xFFFU);
+        ++i;
+    }
+    for (std::size_t k = first; k < frames.size(); ++k)
+        for (std::size_t w = frames[k].used; w < kCompactWordsPerFrame; ++w) frames[k].words[w] = kCompactPad;
 }
 
 Record decode_record(std::uint64_t raw) {

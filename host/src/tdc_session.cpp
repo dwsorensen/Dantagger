@@ -258,6 +258,10 @@ StreamResult Session::stream(const StreamRequest& request, const RecordSink& sin
 
 StreamResult Session::stream_batches(const StreamRequest& request, const RecordBatchSink& sink,
                                      const StreamProgressCallback& progress, const std::atomic<bool>* abort) {
+    if (request.compact) {
+        if (!timing_) (void)status();
+        if (!timing_->compact_supported()) throw ArgumentError("compact records need TDC firmware release 3");
+    }
     StreamResult result;
     result.run_id = (random_u64() >> 1U) | 1U;
     const auto start_txn = next_transaction();
@@ -314,8 +318,12 @@ StreamResult Session::stream_batches(const StreamRequest& request, const RecordB
         return true;
     };
 
+    CompactExpander expander;
+    std::vector<std::uint64_t> expanded;
+    expanded.reserve(kCompactWordsPerFrame);
+    result.compact = request.compact;
     try {
-        write_frame(encode_start(result.run_id, start_txn, request.window_us));
+        write_frame(encode_start(result.run_id, start_txn, request.window_us, request.compact));
         while (result.failure.empty() && !completed) {
             const double elapsed = seconds_since(start);
             if (!result.start_ack && elapsed * 1000.0 > options_.response_timeout_ms) {
@@ -400,11 +408,25 @@ StreamResult Session::stream_batches(const StreamRequest& request, const RecordB
                              std::to_string(result.records) + ")");
                         break;
                     }
+                    if (data->format != (request.compact ? 2 : 1)) {
+                        fail("DATA frame " + std::to_string(result.frames) + " has record format " +
+                             std::to_string(data->format));
+                        break;
+                    }
                     ++result.frames;
+                    const std::vector<std::uint64_t>* records = &data->records;
+                    if (request.compact) {
+                        expanded.clear();
+                        if (!expander.expand(data->words.data(), data->words.size(), expanded, error)) {
+                            fail("DATA frame " + std::to_string(result.frames - 1) + ": " + error);
+                            break;
+                        }
+                        records = &expanded;
+                    }
                     std::size_t good = 0;
-                    while (good < data->records.size() && check_record(data->records[good])) ++good;
-                    result.records += good;
-                    if (sink && good) sink(data->records.data(), good);
+                    while (good < records->size() && check_record((*records)[good])) ++good;
+                    result.records += request.compact ? (good == records->size() ? data->words.size() : 0) : good;
+                    if (sink && good) sink(records->data(), good);
                     continue;
                 }
                 fail("unexpected frame type during the run");
@@ -435,11 +457,14 @@ StreamResult Session::stream_batches(const StreamRequest& request, const RecordB
             fail("the run did not end stopped (" + status_name(final.status) + ")");
         else if (!end_seen)
             fail("the run ended without an END marker");
+        else if (request.compact && final.stream.record_format != 2)
+            fail("the FPGA did not run with compact records");
         else if (final.stream.records != result.records || final.stream.frames != result.frames)
             fail("the FPGA reports " + std::to_string(final.stream.records) + " records in " +
                  std::to_string(final.stream.frames) + " frames; received " + std::to_string(result.records) + " in " +
                  std::to_string(result.frames));
     }
+    if (result.final_response) result.compact_invalid = result.final_response->stream.compact_invalid;
     result.pass = result.failure.empty() && completed;
     if (!result.failure.empty()) {
         try {

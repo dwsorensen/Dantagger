@@ -194,6 +194,7 @@ void Device::post_state() {
     view_.set_up = b->set_up();
     view_.release = dt::release_name(st.design_version);
     view_.capture = dt::describe_capture(st);
+    view_.records = dt::describe_records(st, b->compact_mode());
     try {
         const auto policy = b->policy_config().bytes();
         view_.policy_frame = st.gpx.written == policy;

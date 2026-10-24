@@ -168,15 +168,20 @@ static std::vector<timestamp_t> run_stream(Tagger& tagger, timestamp_t duration,
     return out;
 }
 
-// ref_bits 0: the frame policy of the release (release 2: 24 + 18 bits DDR;
-// release 1: 24 + 20 bits SDR).  ref_bits 6 on release 2: the shortest frame
-// at 250 MHz DDR (6 + 18, an 8 us reference-index wrap).
+// ref_bits 0: the frame policy of the release (releases 2 and 3: 24 + 18
+// bits DDR; release 1: 24 + 20 bits SDR).  ref_bits 6 on release 2/3: the
+// shortest frame at 250 MHz DDR (6 + 18, an 8 us reference-index wrap).
+// Release 3 (the simulated FPGA's default) runs with compact records where
+// the frame allows them (12-24 index bits, <= 18 stop bits) unless `compact`
+// is 0.
 static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t jitter_ps, double rate_hz,
-                    timestamp_t silence_ps, std::uint64_t drop_every, bool release1 = false) {
+                    timestamp_t silence_ps, std::uint64_t drop_every, int release = 3, int compact = -1) {
+    const bool release1 = release == 1;
     const auto dir = std::filesystem::temp_directory_path() / ("dantagger_test_state_" + std::to_string(getpid()));
     TdcBackend::simulate_unplug();
     auto& fake = TdcBackend::simulated_fpga();
-    if (release1) fake.release1();
+    if (release == 1) fake.release1();
+    if (release == 2) fake.release2();
     fake.gpx_ppm = ppm;
     fake.latency_ps = 600000;
     fake.latency_jitter_ps = jitter_ps;
@@ -209,14 +214,20 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
     o.ref_index_bits = ref_bits;
     o.stop_bits = ref_bits == 0 ? 0 : ref_bits == 24 ? 20 : 18;
     o.state_dir = dir.string();
+    o.compact = compact;
+    const int want_ref = ref_bits != 0 ? ref_bits : 24;
+    const int want_stop = ref_bits == 0 ? (release1 ? 20 : 18) : o.stop_bits;
+    const bool want_compact = release == 3 && compact != 0 && want_ref >= 12 && want_stop <= 18;
     Tagger tagger(std::make_unique<TdcBackend>(o));
     {
         auto& b = static_cast<TdcBackend&>(tagger.backend());
         const auto st = b.last_status();
-        const int want_ref = ref_bits != 0 ? ref_bits : 24;
         CHECK(st.lvds.ref_bits == want_ref);
+        CHECK(st.lvds.stop_bits == want_stop);
         CHECK(st.lvds.ddr == !release1);
-        CHECK(st.design_version == (release1 ? tdcctl::kDesignVersionR1 : tdcctl::kDesignVersionR2));
+        CHECK(st.design_version == (release == 1   ? tdcctl::kDesignVersionR1
+                                    : release == 2 ? tdcctl::kDesignVersionR2
+                                                   : tdcctl::kDesignVersionR3));
     }
     const timestamp_t duration = 6'000'000'000 + silence_ps;
     std::vector<std::int32_t> chans;
@@ -227,9 +238,13 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
         Truth copy = truth;
         truth = std::move(copy);
     }
+    auto& backend = static_cast<TdcBackend&>(tagger.backend());
     tagger.close();   // the source stops with the run
+    // The run used the records it should have (its final response, field 112 on release 3).
+    CHECK(backend.last_status().stream.record_format == (want_compact ? 2 : 1));
     std::sort(truth.events.begin(), truth.events.end());
-    std::printf("  %-34s %zu events (truth %zu), %zu markers\n", name, got.size(), truth.events.size(), specials);
+    std::printf("  %-44s %zu events (truth %zu), %zu markers%s\n", name, got.size(), truth.events.size(), specials,
+                want_compact ? ", compact" : "");
     CHECK(!got.empty());
     CHECK(std::is_sorted(got.begin(), got.end()));
     if (drop_every == 0) {
@@ -249,6 +264,13 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
             if (i > 0 && got[i] - tr[i] != got[i - 1] - tr[i - 1]) ++changes;
         }
         std::printf("    offset changes %zu, channels matching %zu of %zu\n", changes, channel_ok, n);
+        for (std::size_t i = 1; (channel_ok != n || changes > 1) && i < n; ++i)   // diagnostic: where it departs from the truth
+            if (chans[i] != trc[i] || got[i] - tr[i] != got[0] - tr[0]) {
+                for (std::size_t j = i > 3 ? i - 3 : 0; j < std::min(n, i + 4); ++j)
+                    std::printf("      #%zu got %lld ch%d  truth %lld ch%d  (offset %lld)\n", j, static_cast<long long>(got[j]),
+                                chans[j], static_cast<long long>(tr[j]), trc[j], static_cast<long long>(got[j] - tr[j]));
+                break;
+            }
         CHECK(channel_ok == n);
         CHECK(n == got.size());
         const bool short_wrap = ref_bits == 6;   // 8 us: a long silence may re-anchor once
@@ -264,6 +286,7 @@ static void hw_case(const char* name, int ref_bits, double ppm, std::uint64_t ji
 }
 
 static void test_hardware_path() {
+    // 24 + 20 bits: 64-bit records (compact needs <= 18 stop bits); 16 + 18: compact.
     hw_case("24-bit index, no drift", 24, 0.0, 0, 50000, 0, 0);
     hw_case("16-bit index, +80 ppm, 3 us jitter", 16, 80.0, 3'000'000, 50000, 0, 0);
     hw_case("16-bit index, -95 ppm, 1 MHz/ch", 16, -95.0, 2'000'000, 1e6, 0, 0);
@@ -271,20 +294,26 @@ static void test_hardware_path() {
     hw_case("16-bit index, 2 s silence, -60 ppm", 16, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
     hw_case("16-bit index, 30 s silence, +100 ppm", 16, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0);
     hw_case("FPGA drops every 9th event", 16, 0.0, 0, 200000, 0, 9);
-    // Release 2 frame policy: 24 + 18 bits, 250 MHz DDR, 8 ns coarse ticks.
-    hw_case("R2 policy (24+18), no drift", 0, 0.0, 0, 50000, 0, 0);
-    hw_case("R2 policy, -95 ppm, 1 MHz/ch, 1 us jitter", 0, -95.0, 1'000'000, 1e6, 0, 0);
-    hw_case("R2 policy, 30 s silence, +100 ppm", 0, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0);
-    hw_case("R2 policy, FPGA drops every 7th", 0, 0.0, 0, 200000, 0, 7);
+    // Release 3 frame policy: 24 + 18 bits, 250 MHz DDR, 8 ns coarse ticks, compact records.
+    hw_case("R3 policy (24+18), no drift", 0, 0.0, 0, 50000, 0, 0);
+    hw_case("R3 policy, -95 ppm, 1 MHz/ch, 1 us jitter", 0, -95.0, 1'000'000, 1e6, 0, 0);
+    hw_case("R3 policy, 30 s silence, +100 ppm", 0, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0);
+    hw_case("R3 policy, FPGA drops every 7th", 0, 0.0, 0, 200000, 0, 7);
+    hw_case("R3 policy, 4 MHz/ch, +50 ppm, 1 us jitter", 0, 50.0, 1'000'000, 4e6, 0, 0);
+    hw_case("R3 policy, compact off, -95 ppm, 1 MHz/ch", 0, -95.0, 1'000'000, 1e6, 0, 0, 3, 0);
+    // Release 2 (64-bit records only), same policy.
+    hw_case("R2 policy (24+18), no drift", 0, 0.0, 0, 50000, 0, 0, 2);
+    hw_case("R2 policy, 30 s silence, +100 ppm", 0, 100.0, 1'000'000, 20000, 30'000'000'000'000, 0, 2);
+    hw_case("R2 policy, FPGA drops every 7th", 0, 0.0, 0, 200000, 0, 7, 2);
     // Release 2 shortest frame (6 + 18, an 8 us wrap; still allowed as an override).
-    hw_case("R2 6+18, no drift", 6, 0.0, 0, 50000, 0, 0);
-    hw_case("R2 6+18, +95 ppm, 1.2 us jitter", 6, 95.0, 1'200'000, 50000, 0, 0);
-    hw_case("R2 6+18, -95 ppm, 1 MHz/ch, 1 us jitter", 6, -95.0, 1'000'000, 1e6, 0, 0);
-    hw_case("R2 6+18, 2 kHz/ch, +60 ppm", 6, 60.0, 500'000, 2000, 0, 0);
-    hw_case("R2 6+18, 2 s silence, -60 ppm", 6, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
+    hw_case("6+18 (64-bit records), no drift", 6, 0.0, 0, 50000, 0, 0);
+    hw_case("6+18 (64-bit records), +95 ppm, 1.2 us jitter", 6, 95.0, 1'200'000, 50000, 0, 0);
+    hw_case("6+18 (64-bit records), -95 ppm, 1 MHz/ch, 1 us jitter", 6, -95.0, 1'000'000, 1e6, 0, 0);
+    hw_case("6+18 (64-bit records), 2 kHz/ch, +60 ppm", 6, 60.0, 500'000, 2000, 0, 0);
+    hw_case("6+18 (64-bit records), 2 s silence, -60 ppm", 6, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0);
     // Release 1 frame policy: 24 + 20 bits SDR, 10 ns coarse ticks.
-    hw_case("R1 policy (24+20), +80 ppm", 0, 80.0, 2'000'000, 50000, 0, 0, true);
-    hw_case("R1 policy, 2 s silence, -60 ppm", 0, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0, true);
+    hw_case("R1 policy (24+20), +80 ppm", 0, 80.0, 2'000'000, 50000, 0, 0, 1);
+    hw_case("R1 policy, 2 s silence, -60 ppm", 0, -60.0, 1'000'000, 20000, 2'000'000'000'000, 0, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -359,12 +388,12 @@ static void test_lifecycle() {
         CHECK(st.design_version == tdcctl::kDesignVersionR1 && !st.lvds.ddr && st.lvds.ref_bits == 24 && st.lvds.stop_bits == 20);
     }
     CHECK(std::filesystem::exists(dir / "SIMULATED-FPGA.json") && std::filesystem::exists(dir / "SIMULATED-FPGA.release2.json"));
-    TdcBackend::simulate_unplug();   // release 2 loaded again
+    TdcBackend::simulate_unplug();   // release 3 loaded again (it shares release 2's state file)
     {
         TdcBackend b(o);
         CHECK(b.setup_action() == "calibrated");
         const auto st = b.last_status();
-        CHECK(st.design_version == tdcctl::kDesignVersionR2 && !st.lvds.ddr && st.lvds.divider_code() == 1);
+        CHECK(st.design_version == tdcctl::kDesignVersionR3 && !st.lvds.ddr && st.lvds.divider_code() == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -485,11 +514,15 @@ static void test_saved_streams() {
                     mode == 0 ? "recorded from run start" : mode == 1 ? "recorder joined mid-run" : "2 ms time limit",
                     live.size(), got.size(), static_cast<unsigned long long>(prog.records), prog.seconds, matched);
         CHECK(info.have_sidecar && info.ref_bits == 24 && info.stop_bits == 18 && info.ddr && info.coarse_tick_ns == 8.0);
+        // Release 3 sent compact records; the file holds 64-bit ones and says so.
+        CHECK(info.design_version == tdcctl::kDesignVersionR3 && info.record_format == 2 &&
+              info.coarse_uncertainty_ticks == tdcctl::kTimeMarkTicks + 16);
         CHECK(prog.lost == 0 && prog.error.empty());
         CHECK(same);
         if (mode == 0) CHECK(matched == live.size());   // the file holds the whole live window (and the run's end)
         if (mode == 1) CHECK(matched < live.size() && matched > live.size() / 4);   // from the join to the window end
-        if (mode == 2) CHECK(prog.limit_reached && prog.seconds >= 0.002 && prog.seconds < 0.0021);
+        // Compact events carry no coarse time: the limit is seen at the next marker (TIME every 131 us).
+        if (mode == 2) CHECK(prog.limit_reached && prog.seconds >= 0.002 && prog.seconds < 0.002 + 0.000135);
         CHECK(static_cast<FileBackend&>(replay.backend()).error().empty());
     }
     fake.latency_jitter_ps = 0;

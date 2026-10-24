@@ -180,10 +180,27 @@ tdcctl::GpxConfig policy_gpx_config(const tdcctl::LinkTiming& timing, double ref
 
 std::string release_name(std::uint32_t design_version) {
     char buf[96];
-    if (design_version == tdcctl::kDesignVersionR2) std::snprintf(buf, sizeof buf, "Release 2 (design 0x%08X)", design_version);
+    if (design_version == tdcctl::kDesignVersionR3) std::snprintf(buf, sizeof buf, "Release 3 (design 0x%08X)", design_version);
+    else if (design_version == tdcctl::kDesignVersionR2) std::snprintf(buf, sizeof buf, "Release 2 (design 0x%08X)", design_version);
     else if (design_version == tdcctl::kDesignVersionR1) std::snprintf(buf, sizeof buf, "Release 1 (design 0x%08X)", design_version);
     else std::snprintf(buf, sizeof buf, "unknown design 0x%08X", design_version);
     return buf;
+}
+
+bool run_uses_compact(const tdcctl::Response& st, int compact_mode) {
+    if (compact_mode == 0) return false;
+    const std::string problem = tdcctl::compact_problem(st);
+    if (problem.empty()) return true;
+    if (compact_mode == 1) throw DeviceError("compact records were required (DANTAGGER_COMPACT=1), but " + problem);
+    return false;
+}
+
+std::string describe_records(const tdcctl::Response& st, int compact_mode) {
+    if (!st.lvds.timing.compact_supported()) return "64-bit records (the image has no compact records)";
+    if (compact_mode == 0) return "64-bit records (compact records turned off)";
+    const std::string problem = tdcctl::compact_problem(st);
+    if (problem.empty()) return "compact 4-byte records (about twice the USB throughput of 64-bit records)";
+    return "64-bit records (" + problem + ")";
 }
 
 double readout_limit_of(const tdcctl::Response& st) {
@@ -214,7 +231,13 @@ tdcctl::FakeFpga& TdcBackend::simulated_fpga() {
 }
 
 TdcBackend::TdcBackend(const TdcOptions& options)
-    : refclk_hz_(options.refclk_hz), ref_override_(options.ref_index_bits), stop_override_(options.stop_bits) {
+    : refclk_hz_(options.refclk_hz), ref_override_(options.ref_index_bits), stop_override_(options.stop_bits),
+      compact_mode_(options.compact) {
+    if (const char* env = std::getenv("DANTAGGER_COMPACT"); env && *env) {
+        const std::string v = env;
+        if (v != "0" && v != "1") throw DeviceError("DANTAGGER_COMPACT must be 0 (64-bit records) or 1 (compact), not " + v);
+        compact_mode_ = v == "1" ? 1 : 0;
+    }
     if (!options.state_dir.empty()) {
         state_dir_ = options.state_dir;
     } else if (const char* x = std::getenv("XDG_STATE_HOME"); x && *x) {
@@ -329,7 +352,9 @@ std::string TdcBackend::model() const {
 // flash while release 2 is tested from RAM: neither may overwrite the other's
 // calibration).  Release 1 keeps SDE/Dantagger's name.
 std::string TdcBackend::state_path() const {
-    const bool r2 = last_status().design_version == tdcctl::kDesignVersionR2;
+    // One file per LVDS receive path: release 1, and releases 2 and 3 (release
+    // 3 adds compact records only; its calibration is release 2's).
+    const bool r2 = last_status().lvds.timing.release2();
     return state_dir_ + "/" + serial_ + (r2 ? ".release2.json" : ".json");
 }
 
@@ -498,6 +523,7 @@ std::string TdcBackend::info() {
     o << "  setup: " << setup_message_ << "\n";
     o << "  GPX2: " << tdcctl::describe_gpx_config(st.gpx.written) << "\n";
     o << "  capture: " << describe_capture(st) << "\n";
+    o << "  records: " << describe_records(st, compact_mode_) << "\n";
     o << "  clock ratio " << decoder_.ratio() << " (+-" << decoder_.ratio_uncertainty() << ")\n";
     const auto& s = decoder_.stats();
     o << "  decoded " << s.events << " events, " << s.markers << " markers, FPGA dropped " << s.dropped
@@ -569,6 +595,7 @@ void TdcBackend::run(Engine& engine, const std::function<bool()>& should_stop) {
                           "button, or reopen it from Python)");
     if (st.gpx.test_pattern()) throw DeviceError("the TDC-GPX2 is sending its LVDS test pattern: configure it without");
     if (const auto problem = tdcctl::capture_problem(st, refclk_hz_); !problem.empty()) throw DeviceError(problem);
+    const bool compact = run_uses_compact(st, compact_mode_);
     {
         DecoderConfig dc;
         dc.divisions = tdcctl::gpx_divisions(st.gpx.written);
@@ -582,12 +609,17 @@ void TdcBackend::run(Engine& engine, const std::function<bool()>& should_stop) {
         dc.latency_spread_ps = static_cast<timestamp_t>(
             std::llround(tdcctl::max_result_latency_us(st.lvds.timing, st.lvds.divider_code(), st.lvds.ddr,
                                                        dc.ref_bits + dc.stop_bits, st.gpx.written[1] >> 6U) * 1e6));
+        // Compact events carry the last marker's coarse time: up to one TIME
+        // period plus the FPGA's 8-cycle hold early.
+        if (compact) dc.coarse_uncertainty_ps = static_cast<timestamp_t>(tdcctl::kTimeMarkTicks + 16) * dc.coarse_ps;
         decoder_.set_config(dc);
     }
     engine.set_saturation_limit(readout_limit_of(st));
     {
         std::lock_guard<std::mutex> lock(tap_mu_);
         run_info_ = make_run_info(st);
+        run_info_.record_format = compact ? 2 : 1;
+        run_info_.coarse_uncertainty_ticks = compact ? tdcctl::kTimeMarkTicks + 16 : 0;
         in_run_ = true;
         for (auto& e : taps_) e.joined = false;
     }
@@ -668,6 +700,7 @@ void TdcBackend::run(Engine& engine, const std::function<bool()>& should_stop) {
         if (should_stop() || decode_failed.load()) abort.store(true);
     };
     tdcctl::StreamRequest request;
+    request.compact = compact;
     tdcctl::StreamResult result;
     try {
         result = session_->stream_batches(request, sink, progress, &abort);
@@ -706,6 +739,10 @@ void TdcBackend::run(Engine& engine, const std::function<bool()>& should_stop) {
                                               " events dropped in this run, more than its OVERFLOW markers counted (" +
                                               std::to_string(marked) + "; markers saturate at 4095 each)");
     }
+    if (result.compact_invalid > 0)
+        engine.log().push("compact", std::to_string(result.compact_invalid) +
+                                         " events had a stop result the compact format cannot carry (>= 258048) and "
+                                         "were dropped by the FPGA: LVDS sampling errors? (recalibrate)");
     if (!decode_error.empty()) throw DeviceError("bad record stream from the TDC board: " + decode_error);
     if (!result.pass) throw DeviceError("streaming from the TDC board failed: " + result.failure);
 }

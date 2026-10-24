@@ -1,7 +1,9 @@
 #pragma once
 
 // Software stand-in for the TDC firmware (--simulate and the host tests),
-// release 2 by default (`release1()` turns it into release 1).
+// release 3 by default (`release2()` / `release1()` turn it into release 2 /
+// 1).  Compact runs go through CompactPacker, the software copy of the
+// FPGA's packer.
 // Protocol-level only, not a timing model: it applies the command rules of
 // PROTOCOL.md (GPX2 rules through the host's own gpx_rule_violation, so the
 // RTL testbench, not this, is the independent check of the FPGA), keeps the
@@ -36,7 +38,7 @@ public:
     bool corrupt_gpx_readback{false};  // CONFIGURE fails with a mismatch
     double eye_bad_lo{0.214};          // where in the bit period the test pattern fails
     double eye_bad_hi{0.357};
-    LinkTiming timing;                 // release 2 (250 MHz build)
+    LinkTiming timing;                 // release 3 (250 MHz build)
     double event_rate_hz{20000.0};     // per channel while streaming
     double read_step_us{1000.0};
     std::size_t commands{0};
@@ -80,6 +82,7 @@ public:
     std::array<std::uint16_t, 8> hist{};
 
     void release1() { timing = LinkTiming::release1(); }
+    void release2() { timing.design = kDesignVersionR2; }
 
     FakeFpga() {
         aw.fill(0);
@@ -149,6 +152,9 @@ private:
     std::uint64_t drop_counter_{0};
     std::uint64_t dropped_pending_{0};
     std::uint64_t dropped_total_{0};
+    bool compact_{false};              // the current or last run uses compact records
+    CompactPacker packer_;
+    std::vector<CompactFrame> packed_;
 
     static std::uint32_t le32(const Frame& f, std::size_t o) {
         return static_cast<std::uint32_t>(f[o]) | (static_cast<std::uint32_t>(f[o + 1]) << 8U) |
@@ -297,6 +303,28 @@ private:
     }
 
     void flush_records() {
+        if (compact_) {
+            packed_.clear();
+            if (!pending_.empty()) packer_.pack(pending_.data(), pending_.size(), packed_);
+            for (const auto& f : packed_) {
+                std::vector<std::uint8_t> payload(4 * kCompactWordsPerFrame);
+                for (std::size_t w = 0; w < kCompactWordsPerFrame; ++w)
+                    for (std::size_t b = 0; b < 4; ++b) payload[4 * w + b] = static_cast<std::uint8_t>(f.words[w] >> (8U * b));
+                au2ft601::FrameHeader h;
+                h.type = au2ft601::FrameType::data;
+                h.run_id = run_id_;
+                h.sequence_or_transaction = seq_++;
+                h.payload_offset = records_sent_;
+                h.pattern_or_opcode = 2;
+                h.valid_payload_length = static_cast<std::uint32_t>(payload.size());
+                h.timestamp = coarse_;
+                const auto frame = au2ft601::encode_frame(h, payload.data(), payload.size());
+                out_.insert(out_.end(), frame.begin(), frame.end());
+                records_sent_ += f.used;
+            }
+            pending_.clear();
+            return;
+        }
         std::size_t i = 0;
         while (i < pending_.size()) {
             const std::size_t n = std::min(kMaxRecordsPerFrame, pending_.size() - i);
@@ -357,7 +385,7 @@ private:
                 }
                 respond(h, Status::ok);
                 return;
-            case Opcode::start: good_args = args_ok(2) && a[1] == 0; break;
+            case Opcode::start: good_args = args_ok(2) && (a[1] & ~(timing.compact_supported() ? 1U : 0U)) == 0; break;
             case Opcode::set_leds: good_args = args_ok(1) && a[0] <= 0xFF; break;
             case Opcode::set_thresholds:
             case Opcode::set_hysteresis: {
@@ -397,6 +425,12 @@ private:
         switch (op) {
             case Opcode::start:
                 if (!(gpx_verified && gpx_measuring && lclk_en)) { respond(h, Status::not_ready); return; }
+                if ((a[1] & 1U) != 0) {   // compact: 12-24 reference-index bits, at most 18 stop bits
+                    const int rb = gpx_ref_index_bits(gpx_written[2]), sb = gpx_stop_bits(gpx_written[2]);
+                    if (rb < 12 || rb > 24 || sb > 18) { respond(h, Status::not_ready); return; }
+                }
+                compact_ = (a[1] & 1U) != 0;
+                packer_.reset();
                 run_id_ = h.run_id;
                 start_txn_ = h.sequence_or_transaction;
                 window_us_ = a[0];
@@ -487,7 +521,7 @@ private:
         if (drop_next_response) { drop_next_response = false; return; }
         if (opcode == 0) opcode = command.pattern_or_opcode;
         std::array<std::uint32_t, kResponseFields> f{};
-        const int n_fields = timing.release2() ? kResponseFields : kResponseFieldsR1;
+        const int n_fields = timing.compact_supported() ? kResponseFields : timing.release2() ? kResponseFieldsR2 : kResponseFieldsR1;
         auto put64 = [&](std::size_t i, std::uint64_t v) { f[i] = static_cast<std::uint32_t>(v); f[i + 1] = static_cast<std::uint32_t>(v >> 32U); };
         auto pack = [](const std::uint8_t* b) { return static_cast<std::uint32_t>(b[0]) | (static_cast<std::uint32_t>(b[1]) << 8U) | (static_cast<std::uint32_t>(b[2]) << 16U) | (static_cast<std::uint32_t>(b[3]) << 24U); };
         f[0] = opcode; f[1] = timing.design; f[2] = 0; f[3] = cmd_ok; f[4] = cmd_bad; f[5] = led_mask;
@@ -533,6 +567,10 @@ private:
             f[109] = static_cast<std::uint32_t>(timing.coarse_tick_ns * 1000.0 + 0.5);
             f[110] = static_cast<std::uint32_t>(timing.phase_steps) |
                      (static_cast<std::uint32_t>(timing.coarse_tick_ns * 1000.0 / timing.sample_ps + 0.5) << 16U);
+        }
+        if (timing.compact_supported()) {
+            f[111] = static_cast<std::uint32_t>(std::min<std::uint64_t>(packer_.invalid(), 0xFFFFFFFFU));
+            f[112] = compact_ ? 2U : 1U;
         }
         std::vector<std::uint8_t> payload(4U * static_cast<std::size_t>(n_fields));
         for (std::size_t i = 0; i < static_cast<std::size_t>(n_fields); ++i)

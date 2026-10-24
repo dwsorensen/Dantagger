@@ -117,7 +117,10 @@ protected:
                 if (info.have_sidecar) {
                     ui::dim_text("recorded %s · %s · %d + %d-bit frames%s · %.3f s of FPGA time · %s records",
                                  info.start.empty() ? "?" : info.start.c_str(),
-                                 info.design_version == 0x54440002 ? "release 2" : info.design_version == 0x54440001 ? "release 1" : "design ?",
+                                 info.design_version == 0x54440003   ? (info.record_format == 2 ? "release 3, compact records" : "release 3")
+                                 : info.design_version == 0x54440002 ? "release 2"
+                                 : info.design_version == 0x54440001 ? "release 1"
+                                                                     : "design ?",
                                  info.ref_bits, info.stop_bits, info.ddr ? " DDR" : "", info.seconds, ui::fmt_count(info.records).c_str());
                     if (info.have_comparator)
                         ui::dim_text("triggers %.3f / %.3f / %.3f / %.3f V · hysteresis %.0f / %.0f / %.0f / %.0f Ω", info.trigger_v[0],

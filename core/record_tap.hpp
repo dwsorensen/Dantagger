@@ -32,6 +32,11 @@ struct RunInfo {
     std::array<double, kNumChannels> trigger_v{};
     std::array<double, kNumChannels> hysteresis_ohm{};
     std::uint64_t run_id{0};
+    // How the board sent the run: 1 = 64-bit records, 2 = compact words
+    // (release 3; the taps still get 64-bit records, each event with the
+    // coarse time of the last marker, up to coarse_uncertainty_ticks early).
+    int record_format{1};
+    std::uint64_t coarse_uncertainty_ticks{0};
 };
 
 struct RunEnd {

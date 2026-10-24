@@ -23,6 +23,12 @@
 // The watermark (every later event is at or after it) follows the last
 // event through the coarse clock, minus a margin for the GPX2 readout latency
 // (its 16-deep FIFO at the LVDS frame rate) and the clock-ratio uncertainty.
+//
+// Compact records (release 3) carry no coarse time: an event comes with the
+// coarse time of the last marker, up to one TIME period (2^14 ticks) early.
+// `coarse_uncertainty_ps` adds that to the prediction error and to the
+// watermark margin, and an anchor places the event at the latest time it can
+// have (so events that complete later but happened earlier stay after it).
 
 #include "common.hpp"
 
@@ -37,6 +43,7 @@ struct DecoderConfig {
     int stop_bits{18};
     timestamp_t coarse_ps{10'000};       // FPGA coarse tick (LinkTiming::coarse_tick_ns)
     timestamp_t latency_spread_ps{2'000'000};   // worst-case readout latency difference (tdcctl::max_result_latency_us)
+    timestamp_t coarse_uncertainty_ps{0};       // how much earlier an event's coarse time can be (compact records)
 };
 
 struct DecoderStats {
@@ -77,6 +84,7 @@ private:
     DecoderConfig cfg_;
     timestamp_t coarse_ps_{10'000};
     double spread_ps_{2e6};
+    timestamp_t margin_ps_{kMarginPs};
     double ref_period_ps_{125000.0};
     double wrap_refs_{65536.0};
     bool started_{false};

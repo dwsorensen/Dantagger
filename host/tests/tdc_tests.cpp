@@ -338,6 +338,179 @@ void test_session() {
     check(r.status == Status::device_error && !r.board.aw_ok(), "LED1 device error");
 }
 
+// Release 3 compact records (PROTOCOL.md 3.4): the packer (the FPGA's, in
+// software) and the expander against each other, malformed word streams,
+// compact DATA frames, and compact runs on the simulated FPGA.
+void test_compact() {
+    // Records: START, then events with reference indices crossing and
+    // re-crossing epochs (bits 23:12), stops in the marker space (dropped),
+    // TIME / OVERFLOW markers, END; enough for several frames, with markers
+    // and epoch changes landing at every position near a frame's end.
+    std::mt19937_64 rng(7);
+    std::vector<std::uint64_t> in;
+    std::uint64_t coarse = 0x123456789AULL;
+    in.push_back(marker(MarkerType::start, 0, coarse));
+    std::size_t invalid = 0;
+    for (int i = 0; i < 6000; ++i) {
+        const int kind = static_cast<int>(rng() % 23);
+        if (kind == 0) {
+            coarse += 16384;
+            in.push_back(marker(MarkerType::time, 0, coarse));
+        } else if (kind == 1) {
+            coarse += 3;
+            in.push_back(marker(MarkerType::overflow, static_cast<std::uint16_t>(1 + rng() % 4095), coarse));
+        } else {
+            std::uint32_t ref = static_cast<std::uint32_t>(rng() & 0xFFFFFFU);
+            if (kind < 12) ref = (static_cast<std::uint32_t>(i / 5 % 3) << 12U) | (ref & 0xFFFU);   // alternating epochs
+            std::uint32_t stop = static_cast<std::uint32_t>(rng() % 125000);
+            if (kind == 2) { stop = 0x3F000U | static_cast<std::uint32_t>(rng() & 0xFFFU); ++invalid; }
+            if (kind == 3) stop = 0x3EFFFU;                     // largest stop that is not a marker word
+            in.push_back(event(static_cast<int>(rng() % 4), 0, ref, stop));
+        }
+    }
+    in.push_back(marker(MarkerType::end, 1, coarse + 5));
+    // Pack in builds of random sizes (as the FPGA builds frames from what waits).
+    CompactPacker packer;
+    std::vector<CompactFrame> frames;
+    for (std::size_t i = 0; i < in.size();) {
+        const std::size_t n = std::min<std::size_t>(in.size() - i, 1 + rng() % 1500);
+        packer.pack(in.data() + i, n, frames);
+        i += n;
+    }
+    bool frames_ok = packer.invalid() == invalid;
+    std::size_t full = 0;
+    for (const auto& f : frames) {
+        if (f.used > kCompactWordsPerFrame) frames_ok = false;
+        for (std::size_t w = f.used; w < kCompactWordsPerFrame; ++w)
+            if (f.words[w] != kCompactPad) frames_ok = false;
+        for (std::size_t w = 0; w < f.used; ++w)
+            if (f.words[w] == kCompactPad) frames_ok = false;
+        if (f.used >= kCompactWordsPerFrame - 2) ++full;
+    }
+    check(frames_ok && frames.size() > 8 && full > 3,
+          "compact packer: PAD tails only, invalid stops dropped (" + std::to_string(packer.invalid()) + ")");
+    CompactExpander ex;
+    std::vector<std::uint64_t> out;
+    std::string error;
+    bool expand_ok = true;
+    for (const auto& f : frames)
+        if (!ex.expand(f.words.data(), f.used, out, error)) {
+            expand_ok = false;
+            break;
+        }
+    // Expected: the input without the invalid events; an event gets the
+    // last marker's coarse time in its low 16 bits.
+    std::vector<std::uint64_t> want;
+    std::uint64_t last_coarse = 0;
+    for (const auto r : in) {
+        if (r >> 63U) {
+            last_coarse = r & 0xFFFFFFFFFFFFULL;
+            want.push_back(r);
+        } else if (((r & 0xFFFFFU) >> 12U) != 0x3FU) {
+            want.push_back(r | ((last_coarse & 0xFFFFU) << 44U));
+        }
+    }
+    check(expand_ok && out == want, "compact expand(pack(records)) gives the records back (" + error + ")");
+
+    // Malformed word streams.
+    auto bad = [&](std::vector<std::uint32_t> w, const std::string& what) {
+        CompactExpander e;
+        std::vector<std::uint64_t> o;
+        std::string err;
+        check(!e.expand(w.data(), w.size(), o, err) && !err.empty(), "compact: " + what + " is refused");
+    };
+    const std::uint32_t head_start = 0xFF000000U, hi = 0xFD000000U, lo = 0xFE000000U, ep = 0xFC000000U;
+    bad({0x00004001U}, "an event before any EPOCH");
+    bad({head_start, hi, lo, ep}, "an EPOCH at the end of a frame");
+    bad({ep, head_start, hi, lo}, "an EPOCH followed by a marker");
+    bad({head_start, hi}, "a marker without its LO word");
+    bad({head_start, lo, hi}, "HEAD LO HI");
+    bad({hi}, "a lone HI word");
+    bad({0xFF000000U | (5U << 21U), hi, lo}, "marker type 5");
+    bad({0xFF000001U, hi, lo}, "a HEAD with reserved bits");
+    bad({ep | 0x1000U, 0x00004001U}, "an EPOCH with reserved bits");
+    bad({kCompactPad}, "PAD inside the payload");
+
+    // Compact DATA frames.
+    auto data_frame = [](const CompactFrame& f, std::uint32_t length) {
+        std::vector<std::uint8_t> payload(4 * kCompactWordsPerFrame);
+        for (std::size_t w = 0; w < kCompactWordsPerFrame; ++w)
+            for (std::size_t b = 0; b < 4; ++b) payload[4 * w + b] = static_cast<std::uint8_t>(f.words[w] >> (8U * b));
+        au2ft601::FrameHeader h;
+        h.type = au2ft601::FrameType::data;
+        h.run_id = 5;
+        h.pattern_or_opcode = 2;
+        h.valid_payload_length = length;
+        return au2ft601::encode_frame(h, payload.data(), std::min<std::size_t>(payload.size(), length));
+    };
+    auto d = decode_data_frame(data_frame(frames[1], 4028), error);
+    check(d && d->format == 2 && d->words.size() == frames[1].used &&
+              std::equal(d->words.begin(), d->words.end(), frames[1].words.begin()),
+          "compact DATA frame decodes (" + error + ")");
+    CompactFrame tail = frames.back();
+    tail.words[kCompactWordsPerFrame - 1] = 0x00004001U;
+    check(!decode_data_frame(data_frame(tail, 4028), error), "compact DATA frame: a word after the PAD tail is refused");
+    check(!decode_data_frame(data_frame(frames[0], 4024), error), "compact DATA frame: payload length 4024 is refused");
+
+    // Compact runs on the simulated FPGA (release 3): events known to the
+    // test come back with exact reference index and stop result.
+    FakeFpga fpga;
+    Session s(fpga, SessionOptions{}, 0x5000);
+    (void)s.sync();
+    std::vector<std::pair<std::uint64_t, int>> produced;
+    fpga.event_source = [&](std::uint64_t t0, std::uint64_t t1, std::vector<std::pair<std::uint64_t, int>>& ev) {
+        for (std::uint64_t t = (t0 / 977777 + 1) * 977777; t < t1; t += 977777) {   // every 0.98 us
+            ev.emplace_back(t, static_cast<int>((t / 977777) % 4));
+            produced.emplace_back(t, static_cast<int>((t / 977777) % 4));
+        }
+    };
+    GpxConfig c6;
+    c6.ddr = true;
+    c6.ref_index_bits = 6;
+    c6.stop_bits = 18;
+    (void)s.gpx_configure(c6.bytes());
+    (void)s.lvds_set(true, 0, 0);
+    StreamRequest req;
+    req.duration_s = 0.02;
+    req.compact = true;
+    auto res = s.stream(req, nullptr);
+    check(!res.pass && res.failure.find("NOT_READY") != std::string::npos, "compact START refused with a 6-bit reference index");
+    GpxConfig c24;
+    c24.ddr = true;
+    c24.ref_index_bits = 24;
+    c24.stop_bits = 18;
+    auto st = s.gpx_configure(c24.bytes());
+    check(compact_problem(st).empty() && st.stream.record_format == 1, "24 + 18 bits allow compact records");
+    produced.clear();
+    std::vector<std::uint64_t> recs;
+    res = s.stream(req, [&](std::uint64_t x) { recs.push_back(x); });
+    std::size_t events = 0, matched = 0;
+    for (const auto x : recs) {
+        if (x >> 63U) continue;
+        const auto r = decode_record(x);
+        if (events < produced.size()) {
+            const auto [t, ch] = produced[events];
+            if (r.channel == ch && r.ref_index == ((t / 125000) & 0xFFFFFFU) && r.stop == t % 125000) ++matched;
+        }
+        ++events;
+    }
+    check(res.pass && res.compact && res.final_response && res.final_response->stream.record_format == 2 &&
+              res.records < recs.size() * 2 && events > 1000 && matched == events && events <= produced.size() &&
+              events + 4 >= produced.size(),   // events still in flight when the run ends are not sent
+          "compact run on the simulated FPGA: " + std::to_string(matched) + " of " + std::to_string(events) +
+              " events exact, " + std::to_string(produced.size()) + " produced (" + res.failure + ")");
+    req.compact = false;
+    res = s.stream(req, nullptr);
+    check(res.pass && !res.compact && res.final_response && res.final_response->stream.record_format == 1,
+          "a 64-bit run after a compact one");
+    FakeFpga r2;
+    r2.release2();
+    Session s2(r2, SessionOptions{}, 0x6000);
+    (void)s2.sync();
+    req.compact = true;
+    expect_throw([&] { (void)s2.stream(req, nullptr); }, "compact records on a release-2 image");
+}
+
 // Histogram semantics (Swabian Histogram / StartStop) on hand-made clicks,
 // and a run file written by a session and loaded back.
 void test_run_files() {
@@ -901,6 +1074,7 @@ int main() {
     test_encoding();
     test_records();
     test_session();
+    test_compact();
     test_run_files();
     test_accumulator();
     test_histogram2d();

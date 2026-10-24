@@ -90,6 +90,8 @@ SavedStreamInfo read_saved_stream(const std::string& path) {
     if (!(s.lclkin_mhz > 0)) s.lclkin_mhz = 100.0;
     s.ddr = json_bool(text, "ddr", false);
     s.high_resolution = static_cast<int>(json_number(text, "high_resolution").value_or(0));
+    s.record_format = static_cast<int>(json_number(text, "record_format").value_or(1));
+    s.coarse_uncertainty_ticks = static_cast<std::uint64_t>(json_number(text, "coarse_uncertainty_ticks").value_or(0));
     s.seconds = json_number(text, "seconds").value_or(0);
     s.have_comparator = json_array4(text, "trigger_v", s.trigger_v) && json_array4(text, "hysteresis_ohm", s.hysteresis_ohm);
     s.start = json_string(text, "start");
@@ -112,6 +114,7 @@ FileBackend::FileBackend(const std::string& path) : info_(read_saved_stream(path
     const double bit_ns = 1000.0 / info_.lclkin_mhz / (info_.ddr ? 2.0 : 1.0);
     dc.latency_spread_ps =
         static_cast<timestamp_t>(((fifo + 1) * (info_.ref_bits + info_.stop_bits) * bit_ns * 1e-3 + 0.5) * 1e6);
+    dc.coarse_uncertainty_ps = static_cast<timestamp_t>(info_.coarse_uncertainty_ticks) * dc.coarse_ps;
     decoder_.set_config(dc);
 }
 
@@ -140,7 +143,7 @@ std::string FileBackend::info() {
     std::ostringstream o;
     o << "saved tag stream " << info_.path << " (" << info_.records << " records";
     if (info_.have_sidecar)
-        o << ", " << info_.ref_bits << " + " << info_.stop_bits << "-bit frames, coarse tick " << info_.coarse_tick_ns << " ns";
+        o << ", " << info_.ref_bits << " + " << info_.stop_bits << "-bit frames, coarse tick " << info_.coarse_tick_ns << " ns" << (info_.record_format == 2 ? ", sent as compact records" : "");
     o << ")";
     return o.str();
 }

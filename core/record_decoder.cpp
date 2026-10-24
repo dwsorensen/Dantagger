@@ -15,7 +15,8 @@ RecordDecoder::RecordDecoder(DecoderConfig config) { set_config(config); }
 
 void RecordDecoder::set_config(const DecoderConfig& config) {
     if (config.divisions == 0 || config.lsb_ps <= 0 || config.ref_bits < 1 || config.ref_bits > 24 ||
-        config.stop_bits < 14 || config.stop_bits > 20 || config.coarse_ps <= 0 || config.latency_spread_ps < 0)
+        config.stop_bits < 14 || config.stop_bits > 20 || config.coarse_ps <= 0 || config.latency_spread_ps < 0 ||
+        config.coarse_uncertainty_ps < 0)
         throw std::invalid_argument("invalid decoder configuration");
     cfg_ = config;
     ref_period_ps_ = static_cast<double>(cfg_.divisions) * static_cast<double>(cfg_.lsb_ps);
@@ -23,7 +24,8 @@ void RecordDecoder::set_config(const DecoderConfig& config) {
     wrap_ps_ = (std::int64_t{1} << cfg_.ref_bits) * static_cast<std::int64_t>(cfg_.divisions) * cfg_.lsb_ps;
     inv_wrap_ps_ = 1.0 / static_cast<double>(wrap_ps_);
     coarse_ps_ = cfg_.coarse_ps;
-    spread_ps_ = static_cast<double>(cfg_.latency_spread_ps);
+    spread_ps_ = static_cast<double>(cfg_.latency_spread_ps + cfg_.coarse_uncertainty_ps);
+    margin_ps_ = kMarginPs + cfg_.coarse_uncertainty_ps;
     // Fast path (ratio taken as 1) while spread + 2e-4 * dc stays below the safe fraction of a wrap.
     fast_dc_limit_ = std::max<std::int64_t>(
         1, static_cast<std::int64_t>((kSafeFraction * static_cast<double>(wrap_ps_) - spread_ps_) / 2e-4 /
@@ -124,7 +126,10 @@ void RecordDecoder::feed(std::uint64_t raw, RawChunk& chunk) {
         tgpx = t_cand;
     }
     if (anchor) {
-        timestamp_t target = static_cast<timestamp_t>(coarse_) * coarse_ps_ - kNominalLatencyPs;
+        // Compact records: the event happened up to coarse_uncertainty_ps after
+        // its (marker) coarse time; anchoring at the latest possible time keeps
+        // events that completed later but happened earlier after the run start.
+        timestamp_t target = static_cast<timestamp_t>(coarse_) * coarse_ps_ + cfg_.coarse_uncertainty_ps - kNominalLatencyPs;
         target = std::max(target, std::max(run_base_, watermark()));
         if (have_event_) target = std::max(target, last_raw_);
         K_ = target - tgpx;
@@ -160,10 +165,10 @@ void RecordDecoder::feed(std::uint64_t raw, RawChunk& chunk) {
 timestamp_t RecordDecoder::watermark() const {
     timestamp_t w;
     if (!have_event_) {
-        w = static_cast<timestamp_t>(coarse_) * coarse_ps_ - kMarginPs;
+        w = static_cast<timestamp_t>(coarse_) * coarse_ps_ - margin_ps_;
     } else {
         const double dc = std::fabs((static_cast<double>(coarse_) - static_cast<double>(last_event_coarse_)) * coarse_ps_);
-        w = marker_time() - kMarginPs - static_cast<timestamp_t>(dc * ratio_unc_);
+        w = marker_time() - margin_ps_ - static_cast<timestamp_t>(dc * ratio_unc_);
     }
     w = std::max(w, run_base_);
     watermark_ = std::max(watermark_, w);
