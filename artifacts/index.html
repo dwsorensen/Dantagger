@@ -1,0 +1,465 @@
+<title>Dantagger Signal Path</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+  /* Page: the whole signal chain. Layout: hero, then a full-width chain of stage chips grouped by place, a detail card under it. */
+  .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 0.6rem 1.4rem; padding-block: 0.4rem; }
+  .figure b { display: block; font-family: var(--f-display); font-size: 2rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .figure span { font-size: 0.85rem; color: var(--muted); }
+
+  .chain { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 0.8rem; }
+  .place { border-radius: var(--radius); padding: 0.6rem; display: grid; gap: 0.45rem; align-content: start; border: 1px solid var(--rule); background: var(--bg); }
+  .place-head { font-family: var(--f-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; display: flex; justify-content: space-between; gap: 0.5rem; }
+  .stage {
+    font: inherit; text-align: left; cursor: pointer; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--rule); border-left: 4px solid var(--c); border-radius: 5px; padding: 0.5rem 0.7rem;
+    display: grid; gap: 0.1rem; position: relative;
+  }
+  .stage:hover { background: var(--sunk); }
+  .stage[aria-selected="true"] { background: var(--c-soft); border-color: var(--c); box-shadow: inset 0 0 0 1px var(--c); }
+  .stage b { font-family: var(--f-display); font-weight: 600; font-size: 1.05rem; }
+  .stage small { color: var(--muted); font-size: 0.84rem; line-height: 1.35; }
+  .stage .rate { font-family: var(--f-mono); font-size: 0.72rem; color: var(--c); }
+  .flow-arrow { text-align: center; color: var(--muted); font-size: 0.8rem; line-height: 1; }
+
+  .detail { border: 1px solid var(--rule); border-top: 4px solid var(--c); border-radius: var(--radius); background: var(--panel); padding: 1.1rem 1.2rem; display: grid; gap: 0.8rem; }
+  .detail-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem 1rem; align-items: baseline; }
+  .detail-body { display: grid; gap: 0.8rem; max-width: 80ch; }
+  .detail-body p { color: var(--ink); }
+  .stepper-nav { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+  /* follow one tag */
+  .tag-steps { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag-steps button { font: inherit; font-family: var(--f-mono); font-size: 0.75rem; border: 1px solid var(--rule); background: var(--bg); color: var(--muted); padding: 0.15rem 0.5rem; border-radius: 3px; cursor: pointer; }
+  .tag-steps button[aria-current="step"] { background: var(--c); border-color: var(--c); color: var(--panel); }
+  .tag-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1.2rem; align-items: start; }
+  @media (max-width: 760px) { .tag-view { grid-template-columns: 1fr; } }
+  .tag-repr { background: var(--sunk); border-radius: var(--radius); padding: 0.9rem; display: grid; gap: 0.6rem; min-height: 180px; align-content: start; }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.9rem; font-size: 0.9rem; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: var(--f-mono); font-size: 0.85rem; overflow-wrap: anywhere; }
+  .bitstr { font-family: var(--f-mono); font-size: 0.82rem; overflow-wrap: anywhere; line-height: 1.7; }
+  .bitstr span { padding: 0 1px; border-radius: 2px; }
+
+  /* time ladder */
+  .ladder { display: grid; gap: 0.15rem; }
+  .rung { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 0.8rem; align-items: center; padding: 0.15rem 0; }
+  .rung-label { font-size: 0.88rem; line-height: 1.25; }
+  .rung-label small { display: block; color: var(--muted); font-size: 0.78rem; }
+  .rung-track { position: relative; height: 18px; }
+  .rung-bar { position: absolute; left: 0; top: 4px; height: 10px; border-radius: 2px; background: var(--c); opacity: 0.85; }
+  .rung-val { position: absolute; top: 0; font-family: var(--f-mono); font-size: 0.75rem; white-space: nowrap; color: var(--ink); }
+  .ladder-axis { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 0.8rem; }
+  .ladder-axis .ticks { position: relative; height: 1.3rem; border-top: 1px solid var(--rule); }
+  .ladder-axis .ticks span { position: absolute; top: 2px; transform: translateX(-50%); font-family: var(--f-mono); font-size: 0.7rem; color: var(--muted); }
+  @media (max-width: 640px) { .rung, .ladder-axis { grid-template-columns: minmax(0, 8.5rem) minmax(0, 1fr); } .ladder-axis .ticks span:nth-child(even) { display: none; } }
+
+  .go-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 0.9rem; }
+  .go { text-decoration: none; display: grid; gap: 0.4rem; padding: 1rem; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--panel); border-top: 4px solid var(--c); }
+  .go:hover { background: var(--sunk); }
+  .go b { font-family: var(--f-display); font-size: 1.3rem; }
+  .go span { color: var(--muted); font-size: 0.92rem; }
+</style>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18h6l2-12 2 12h10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 21v-3M14 21v-3M18 21v-3M6 21v-3" stroke="currentColor" stroke-width="1.2"/></svg>
+      Dantagger
+    </a>
+    <nav class="nav" aria-label="Pages">
+      <a href="index.html" aria-current="page"><span class="lvl">01</span>End to end</a>
+      <a href="fpga.html"><span class="lvl">02</span>Inside the FPGA</a>
+      <a href="host.html"><span class="lvl">03</span>Inside the host</a>
+      <a href="formats.html"><span class="lvl">04</span>Bits on the wire</a>
+    </nav>
+    <div class="depth"><span>Detail</span>
+      <div class="seg" role="group" aria-label="Level of detail">
+        <button data-level="1" aria-pressed="true">Intuition</button><button data-level="2" aria-pressed="false">Mechanism</button><button data-level="3" aria-pressed="false">Exact</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="eyebrow">TDC board · firmware release 3 · Dantagger</div>
+    <h1>From a click to a picosecond</h1>
+    <p class="lede">A detector pulse enters the comparator board. Under two microseconds later the FPGA holds it as a 42-bit number. About a millisecond after that the PC has it as a time in picoseconds and has added it to your histogram. These pages follow that path.</p>
+    <p class="muted" style="max-width:72ch">Use <b>Detail</b> at the top to choose the depth: <b>Intuition</b> gives the idea, <b>Mechanism</b> how each part works, <b>Exact</b> the numbers, registers and source files. Every page remembers the setting.</p>
+    <div class="figures" aria-label="Key figures">
+      <div class="figure"><b>1 ps</b><span>one count of a time result</span></div>
+      <div class="figure"><b>4</b><span>input channels (STOP1–STOP4)</span></div>
+      <div class="figure"><b>11.9 M/s</b><span>most events per channel the TDC chip can read out</span></div>
+      <div class="figure"><b>28 M/s</b><span>64-bit records over USB 3, measured</span></div>
+      <div class="figure"><b>23.35 M/s</b><span>tags end to end on the board, 0 dropped</span></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="chain">
+    <div class="chapter-head">
+      <div class="eyebrow">The signal chain</div>
+      <h2>Eleven stages in four places</h2>
+      <p class="muted" style="max-width:72ch">Click a stage. Colour marks where it runs: <span class="c-board"><span class="sw bg-board"></span>on the boards</span>, <span class="c-fpga"><span class="sw bg-fpga"></span>in the FPGA</span>, <span class="c-link"><span class="sw bg-link"></span>on the USB link</span>, <span class="c-host"><span class="sw bg-host"></span>on the PC</span>.</p>
+    </div>
+    <div class="chain" id="chainEl" role="tablist" aria-label="Stages"></div>
+    <div class="detail" id="detailEl" role="tabpanel" aria-live="polite"></div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="follow">
+    <div class="chapter-head">
+      <div class="eyebrow">Follow one tag</div>
+      <h2>What one click looks like at every step</h2>
+      <p class="muted" style="max-width:72ch">One event, worked through with real arithmetic. The numbers are the ones the hardware and the code would produce for it. <b>Another click</b> makes a new one.</p>
+    </div>
+    <div class="bench" id="tagBench">
+      <div class="bench-head">
+        <div class="tag-steps" id="tagSteps" aria-label="Steps"></div>
+        <div class="stepper-nav">
+          <button class="btn" id="tagPrev">← Back</button>
+          <button class="btn primary" id="tagNext">Next →</button>
+          <button class="btn" id="tagNew">Another click</button>
+        </div>
+      </div>
+      <div class="tag-view">
+        <div class="detail-body" id="tagText"></div>
+        <div class="tag-repr" id="tagRepr"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="scales">
+    <div class="chapter-head">
+      <div class="eyebrow">Scales of time</div>
+      <h2>From one picosecond to 26 days</h2>
+      <p class="muted" style="max-width:72ch">The system works on about eighteen orders of magnitude of time at once. Each bar is on a logarithmic scale from 1 ps. Higher detail levels add more rungs.</p>
+    </div>
+    <div class="bench">
+      <div class="ladder" id="ladder"></div>
+      <div class="ladder-axis"><div></div><div class="ticks" id="ladderTicks"></div></div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="deeper">
+    <div class="chapter-head">
+      <div class="eyebrow">Go deeper</div>
+      <h2>Three closer looks</h2>
+    </div>
+    <div class="go-cards">
+      <a class="go" href="fpga.html" style="--c: var(--fpga)"><b>Inside the FPGA</b><span>Clock domains, the LVDS sampling calibration, the frame decoder, the event queue under load, the USB frame builder, the commands, and how much of the chip it all uses.</span></a>
+      <a class="go" href="host.html" style="--c: var(--host)"><b>Inside the host</b><span>The three threads, how a 24-bit index becomes an absolute time, the watermark and the merge, measurement windows, and every measurement class running live on a simulated stream.</span></a>
+      <a class="go" href="formats.html" style="--c: var(--link)"><b>Bits on the wire</b><span>Interactive decoders for the 64-bit record and the compact 32-bit words, the 4 KiB USB frame word by word, and the full command and status reference.</span></a>
+    </div>
+  </section>
+
+  <div class="next-page">
+    <span></span>
+    <a href="fpga.html">Inside the FPGA →<small>Clock domains, calibration, the event queue</small></a>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+(function () {
+  // ---------------------------------------------------------------------------
+  // Stages
+  // ---------------------------------------------------------------------------
+  const PLACES = [
+    { id: "board", name: "On the boards", c: "--board", stages: ["detector", "comparator", "gpx2"] },
+    { id: "fpga", name: "In the FPGA", c: "--fpga", stages: ["rx", "fifo", "tx"] },
+    { id: "link", name: "USB 3 link", c: "--link", stages: ["usb"] },
+    { id: "host", name: "On the PC", c: "--host", stages: ["receive", "decode", "engine", "faces"] },
+  ];
+  const S = {
+    detector: {
+      t: "Detector pulse", s: "A voltage pulse on one of four inputs", rate: "analog",
+      d1: "<p>A detector, photodiode or laser sync output makes a voltage pulse on one of four inputs. Only one thing about the pulse matters from here on: <b>the moment it crosses a threshold</b>.</p>",
+      d2: "<p>The four inputs are STOP1 to STOP4 of the TDC chip. Dantagger and its Python API call them channels 1 to 4, as the Swabian Time Tagger does.</p><p>STOP3 is inverted on purpose at the comparator, so it fires on the opposite edge from the others.</p>",
+      d3: "<p>Trigger levels may be set from −0.100 V to +1.500 V. A freshly powered board sits at DAC code 0, which is −0.1004 V. Neither the app nor Python changes the board's settings when it connects. They read back what the board has.</p>",
+    },
+    comparator: {
+      t: "Comparator board", s: "Analog pulse → clean digital edge", rate: "4 channels",
+      d1: "<p>A comparator per channel outputs a sharp digital edge when the pulse crosses <b>your trigger level</b>. Hysteresis stops noise near the threshold from firing it again and again.</p>",
+      d2: "<p>One TLV3901 comparator per channel. A four-channel DAC sets the trigger levels. Digital potentiometers set the hysteresis, and <b>lower resistance means more hysteresis</b>: typically 0 Ω gives 47.5 mV, 0.8 kΩ 16.5 mV, and 4 kΩ or more about 1 mV.</p><p>The FPGA sends these settings over SPI and I²C. It refuses them while streaming. To change a trigger during a measurement, the app stops the run, applies the change and restarts. The time in between is not counted.</p>",
+      d3: "<p>Commands 0x20 SET_THRESHOLDS (DAC code ≤ 41953) and 0x21 SET_HYSTERESIS (wiper per channel), with hysteresis allowed from 75 to 5075 Ω. The same I²C bus has the TMP117 temperature sensor (0x48), polled every second. The board also carries an AW2013 RGB LED driver and an MCP23S08 I/O expander. The board's own error and operation counters are in STATUS fields 6–9.</p>",
+    },
+    gpx2: {
+      t: "TDC-GPX2", s: "Measures each edge to 1 ps", rate: "≤ 11.9 M/s per ch",
+      d1: "<p>The time-to-digital converter chip. It measures every edge against its own 8 MHz reference clock, to <b>1 picosecond</b> per count, and sends each result to the FPGA as a short serial message.</p>",
+      d2: "<p>Each edge gets two numbers:</p><ul><li>the <b>reference index</b>: which 125 ns tick of the reference clock it fell in (a counter that keeps rising);</li><li>the <b>stop result</b>: how far into that tick, in 1/125 000ths of it, which is 1 ps.</li></ul><p>Both go out as one <b>42-bit message</b> per event (24 + 18 bits) on that channel's serial line, at 500 Mbit/s. One message takes 84 ns, so a channel can report at most 11.9 M events/s. A 16-deep buffer inside the chip absorbs bursts. Above that rate the chip loses events without counting them.</p>",
+      d3: "<p>REFCLK_DIVISIONS = 125 000, so the LSB is 10¹² / (8 MHz × 125 000) = 1 ps. The 24-bit index wraps every 2²⁴ × 125 ns = <b>2.097 s</b>. With HIGH_RESOLUTION off, the internal step is about <b>44.12 ps</b>: the 1 ps codes sit on a 44 ps lattice, which is the comb you see in same-edge histograms (datasheet Figure 21).</p><p>LVDS output in DDR at LCLK 250 MHz. The FPGA configures the chip over SPI (1 MHz, mode 1, registers 0–16) and checks the readback twice, before and after INIT.</p>",
+    },
+    rx: {
+      t: "LVDS receive", s: "Finds each message, reads the numbers", rate: "500 MS/s per lane",
+      d1: "<p>The FPGA listens on the GPX2's four serial lines, finds where each message starts, reads out the two numbers, and stamps them with its own clock.</p>",
+      d2: "<p>The FPGA <b>generates the GPX2's clock itself</b> (LCLKIN, 250 MHz) and samples every data line every 2 ns. The cable delay is unknown, so a <b>calibration</b> after power-up finds the moment in each bit that reads cleanly. It does this by sweeping the sampling instant while the GPX2 sends a test pattern.</p><p>Each channel has a FRAME line next to its data line. FRAME is high for the first 8 bits of a message, which is how the FPGA finds where a message starts. Each finished message gets the FPGA's <b>coarse time</b>, an 8 ns counter that started at power-up.</p>",
+      d3: "<p><code>lvds_phy.sv</code>: one MMCM with a 1 GHz VCO gives lclk_tx 250 MHz (LCLKIN), lclk_rxf 250 MHz (ISERDESE2 sampling on both edges), lclk_rx 125 MHz (receive logic and coarse time), and 200 MHz for IDELAYCTRL. The fine phase shift is 17.857 ps per step, and 224 steps make 4 ns. IDELAYE2 taps are 78 ps each.</p><p><code>lvds_rx.sv</code>: a decimator keeps every sample whose index ≡ bit phase (mod N), with N = 1 at 250 MHz DDR. <code>gpx_deser.sv</code> decodes 4 bits per 8 ns cycle. A FRAME bit that breaks the 8-high pattern is a structure error, and the frame is abandoned.</p>",
+    },
+    fifo: {
+      t: "Event queue", s: "Four channels take turns; time markers mixed in", rate: "16 384 records",
+      d1: "<p>Events from the four channels take turns entering one queue. Time markers go in between them. The queue rides out short USB pauses so nothing is lost.</p>",
+      d2: "<p>One record enters per 8 ns cycle. The order of priority is:</p><ol><li>START</li><li>OVERFLOW (how many events were dropped)</li><li>TIME, every 131 µs</li><li>waiting events, channel 1 first</li><li>END</li></ol><p>An event waits at most 8 cycles. If the queue is still full it is dropped and counted, and the next OVERFLOW marker records how many. Markers are never dropped.</p>",
+      d3: "<p>An XPM async FIFO, 16 384 × 64 bit (32 RAMB36 tiles), crosses from lclk_rx (125 MHz) to the FT601 clock (66.67 MHz). HOLD_LIMIT = 8 and TIME_MARK_BITS = 14 (2¹⁴ × 8 ns = 131.072 µs). No record is ever more than 8 cycles older than the record before it, so the host can always unwrap the 16-bit coarse time in an event.</p>",
+    },
+    tx: {
+      t: "USB frames", s: "Records → 4 KiB frames with a CRC", rate: "1007 events / frame",
+      d1: "<p>Records are packed into 4 KiB frames with a checksum and handed to the USB chip.</p>",
+      d2: "<p>A frame goes out when it is full, when records have waited 1 ms, or at once when the run ends. Release 3's <b>compact format</b> makes most events 32 bits instead of 64, so a frame carries up to 1007 events instead of 503. While streaming, the FPGA still answers STATUS and STOP and refuses everything else (BUSY).</p>",
+      d3: "<p>Frames are 1024 words: header words 0–15 (magic AU2FT601, run ID, sequence, records before, record format), payload words 16–1022, and a CRC-32/ISO-HDLC in word 1023. The FPGA drives the bus only to answer a CRC-valid command or to send a run it started. At least 16 idle FT cycles follow every DATA frame (128 after every 8th), so a STOP gets through under back-pressure. Source: <code>tdc_engine.sv</code>.</p>",
+    },
+    usb: {
+      t: "FT601 → USB 3", s: "A bridge chip carries frames to the PC", rate: "≈ 225 MB/s measured",
+      d1: "<p>A USB 3 bridge chip (FT601, on the Ft+ board) moves the frames to the PC.</p>",
+      d2: "<p>Towards the FPGA the FT601 has a 32-bit bus at 66.67 MHz. Measured on this PC: about <b>225 MB/s, or 28 M 64-bit records/s</b>. Compact records should carry about twice as many events. That is an estimate: release 3 has not run on the board yet.</p>",
+      d3: "<p>The FT601 must be in 245 FIFO mode, 1 channel, 66.67 MHz. The host checks this before sending a byte. The host side is the FTDI D3XX 1.1.8 library with 64 transfers of 4 KiB in flight and a 4096-buffer library queue (<code>DANTAGGER_USB=URBS,QUEUE</code>), so the FPGA's 0.6 ms queue survives short pauses of a busy PC.</p>",
+    },
+    receive: {
+      t: "dt-receive thread", s: "Reads USB, checks every frame", rate: "≈ 56 % of a core",
+      d1: "<p>On the PC, one thread does nothing but read USB and check each frame, so the FPGA's queue is always being emptied.</p>",
+      d2: "<p>It checks each frame's magic, CRC, run ID and sequence number, and expands compact words back into ordinary 64-bit records. It passes each USB read to the decode thread through a queue of up to 256 MB, so a slow moment downstream never stalls the USB reads.</p>",
+      d3: "<p><code>tdcctl::Session::stream_batches</code> with <code>CompactExpander</code>: an event takes the coarse time of the last marker. <code>RecordQueue</code>, <code>kRecordQueueBytes</code> = 256 MB. The whole run is driven by <code>TdcBackend::run</code> in <code>core/tdc_backend.cpp</code>. Measured at 23.35 M tags/s: 56 % of one core.</p>",
+    },
+    decode: {
+      t: "dt-decode thread", s: "Records → picosecond times", rate: "≈ 49 % of a core",
+      d1: "<p>Turns every record into a time in picoseconds, on one timeline that keeps counting up for the whole session.</p>",
+      d2: "<p>time = reference index × 125 000 + stop result, in ps. The index wraps every 2.1 s, so the decoder uses the FPGA's coarse clock to tell which wrap each event belongs to. It also keeps a <b>watermark</b>, a time no later event can come before, which tells the next stage what is final. The same thread feeds the rate bar and any raw recording.</p>",
+      d3: "<p><code>RecordDecoder::feed</code> predicts each event's time from the previous one, using the measured ratio of the GPX2 and FPGA clocks. It chooses the wrap while the uncertainty stays under 0.45 of a wrap, and re-anchors to the coarse clock otherwise. It sends chunks of up to 32 768 events, or one every 1 ms of FPGA time.</p>",
+    },
+    engine: {
+      t: "dt-engine thread", s: "Orders tags, runs measurements", rate: "≈ 61 % of a core",
+      d1: "<p>Puts the four channels into one time-ordered stream and gives every running measurement its share of the tags.</p>",
+      d2: "<p>It applies each channel's dead time and input delay, then merges the four channels up to the watermark. Each <b>block</b> of tags goes to every running measurement, which processes only the part inside its own window (<code>start</code>, <code>startFor</code>). Measurements: Countrate, Counter, Histogram, Correlation, HistogramND and TimeTagStream.</p>",
+      d3: "<p><code>Merger::push</code> does a 4-way merge with ties ordered by channel. <code>Engine::dispatch</code> cuts each block to every measurement's window. Windows count captured time only: a gap between FPGA runs moves a window's end out. The measurement semantics match the Swabian library bit for bit (27 Python tests against it as the oracle).</p>",
+    },
+    faces: {
+      t: "App and Python", s: "Where you see the numbers", rate: "same C++ core",
+      d1: "<p>You see the results in the Dantagger app's panels, or in Python through the Swabian Time Tagger API your scripts already use.</p>",
+      d2: "<p>Both link the same C++ core. The <b>app</b> runs any number of measurements at once (as tabs, side by side, or in their own windows), and can record raw tags and replay them. The <b>Python library</b> is a drop-in <code>TimeTagger</code> for the SDE scripts and never writes tags to disk. Only one of the two can hold the FT601 at a time.</p>",
+      d3: "<p><code>app/main.cpp</code> (Dear ImGui 1.90.9 docking + ImPlot), <code>app/device.cpp</code> (board worker and shared channel settings), <code>core/python/module.cpp</code> (pybind11). Settings rule: the app uses <code>SettingsPolicy::restart</code>; Python is strict and raises <code>SettingsBusyError</code> while a measurement you started is running.</p>",
+    },
+  };
+  const placeOf = {};
+  PLACES.forEach((p) => p.stages.forEach((s) => (placeOf[s] = p)));
+  const LINKS = { board: ["fpga.html", "Inside the FPGA: how it configures the boards"], fpga: ["fpga.html", "Inside the FPGA"], link: ["formats.html", "Bits on the wire: the USB frame"], host: ["host.html", "Inside the host"] };
+  const order = PLACES.flatMap((p) => p.stages);
+
+  const chainEl = document.getElementById("chainEl");
+  const detailEl = document.getElementById("detailEl");
+  let current = "gpx2";
+  try { current = localStorage.getItem("dt-stage") || current; } catch (e) {}
+  if (!S[current]) current = "gpx2";
+
+  PLACES.forEach((p) => {
+    const box = document.createElement("div");
+    box.className = "place";
+    box.style.setProperty("--c", `var(${p.c})`);
+    box.innerHTML = `<div class="place-head"><span style="color:var(${p.c})">${p.name}</span><span class="muted">${p.stages.length} stage${p.stages.length > 1 ? "s" : ""}</span></div>`;
+    p.stages.forEach((id, i) => {
+      if (i) box.insertAdjacentHTML("beforeend", '<div class="flow-arrow" aria-hidden="true">↓</div>');
+      const b = document.createElement("button");
+      b.className = "stage";
+      b.setAttribute("role", "tab");
+      b.id = "st-" + id;
+      b.style.setProperty("--c", `var(${p.c})`);
+      b.style.setProperty("--c-soft", `var(${p.c}-soft)`);
+      b.innerHTML = `<b>${S[id].t}</b><small>${S[id].s}</small><span class="rate">${S[id].rate}</span>`;
+      b.addEventListener("click", () => select(id));
+      box.appendChild(b);
+    });
+    chainEl.appendChild(box);
+  });
+
+  function select(id) {
+    current = id;
+    try { localStorage.setItem("dt-stage", id); } catch (e) {}
+    renderDetail();
+  }
+  function renderDetail() {
+    const s = S[current], p = placeOf[current];
+    chainEl.querySelectorAll(".stage").forEach((b) => b.setAttribute("aria-selected", String(b.id === "st-" + current)));
+    detailEl.style.setProperty("--c", `var(${p.c})`);
+    const i = order.indexOf(current);
+    const lvl = DT.level;
+    const link = LINKS[p.id];
+    detailEl.innerHTML = `
+      <div class="detail-head">
+        <div><div class="eyebrow" style="color:var(${p.c})">${p.name} · stage ${i + 1} of ${order.length}</div><h3>${s.t}</h3></div>
+        <div class="stepper-nav">
+          <button class="btn" data-go="-1" ${i === 0 ? "disabled" : ""}>← ${i > 0 ? S[order[i - 1]].t : ""}</button>
+          <button class="btn" data-go="1" ${i === order.length - 1 ? "disabled" : ""}>${i < order.length - 1 ? S[order[i + 1]].t : ""} →</button>
+        </div>
+      </div>
+      <div class="detail-body">
+        ${s.d1}
+        ${lvl >= 2 ? `<div style="display:grid;gap:.7rem"><div><span class="depth-tag">Mechanism</span></div>${s.d2}</div>` : ""}
+        ${lvl >= 3 ? `<div style="display:grid;gap:.7rem"><div><span class="depth-tag">Exact</span></div>${s.d3}</div>` : ""}
+        ${lvl < 3 ? `<p class="muted" style="font-size:.88rem">More on this stage at ${lvl === 1 ? "<b>Mechanism</b> and <b>Exact</b>" : "<b>Exact</b>"} detail.</p>` : ""}
+        <p><a href="${link[0]}">${link[1]} →</a></p>
+      </div>`;
+    detailEl.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => select(order[i + +b.dataset.go])));
+  }
+  renderDetail();
+  DT.onDepth(renderDetail);
+
+  // ---------------------------------------------------------------------------
+  // Follow one tag: real arithmetic with BigInt
+  // ---------------------------------------------------------------------------
+  const DIV = 125000n, LSB = 1n, COARSE_PS = 8000n, REF_BITS = 24, STOP_BITS = 18;
+  let tag;
+  let seed = 7;
+  function newTag() {
+    const r = DT.rng(seed++ * 2654435761);
+    const ch = 1 + Math.floor(r() * 4);
+    const ref = BigInt(Math.floor(r() * (1 << 24)));
+    const stop = BigInt(Math.floor(r() * 125000));
+    const runBaseCoarse = 1234567890n + BigInt(Math.floor(r() * 1e6));       // FPGA coarse ticks at the run's START
+    const K = runBaseCoarse * COARSE_PS - 13n * 125000n * 1000n;             // decoder offset: GPX2 time → session timeline
+    const tgpx = (ref * DIV + stop) * LSB;
+    const t = tgpx + K + 2097152000000n * BigInt(Math.floor(r() * 3));      // some number of index wraps into the run
+    const latency = 600000n + BigInt(Math.floor(r() * 900000));             // edge → frame complete, ps
+    const coarse = (t + latency) / COARSE_PS;                               // FPGA coarse time when the frame completed
+    const rec = (BigInt(ch - 1) << 61n) | ((coarse & 0xFFFFn) << 44n) | (ref << 20n) | stop;
+    const epoch = ref >> 12n, low = ref & 0xFFFn;
+    const word = (stop << 14n) | (BigInt(ch - 1) << 12n) | low;
+    const epochWord = (0xFCn << 24n) | epoch;
+    const binw = 50n, start = t - BigInt(31550 + Math.floor(r() * 400));    // a START tag ~31.6 ns earlier
+    const delay = 0n;
+    const bin = (t + delay - start) / binw;
+    const threshold = (0.03 + r() * 0.08).toFixed(3);
+    const payloadWord = 16 + Math.floor(r() * 1000);
+    const seq = Math.floor(r() * 90000);
+    tag = { ch, ref, stop, tgpx, t, K, coarse, latency, rec, epoch, low, word, epochWord, binw, start, bin, threshold, payloadWord, seq };
+  }
+  newTag();
+  const hx = (v, n) => "0x" + v.toString(16).toUpperCase().padStart(n, "0");
+  const grp = (s) => s.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  const bin = (v, n) => v.toString(2).padStart(n, "0");
+
+  const STEPS = [
+    { k: "Click", c: "--board",
+      text: (g) => `<h3>A pulse on input ${g.ch}</h3><p>A photon hits the detector on channel ${g.ch}, which outputs a voltage pulse. Nothing has been measured yet: this is a voltage on a cable.</p>`,
+      repr: (g) => pulseSVG(g, false) },
+    { k: "Edge", c: "--board",
+      text: (g) => `<h3>The comparator fires</h3><p>The pulse crosses the channel's trigger level of <b>${g.threshold} V</b>, and the comparator's output jumps. That edge is the event. Everything after this measures <i>when</i> it happened.</p><p data-depth="2">Hysteresis keeps the output from switching back on noise until the input has fallen clearly below the threshold.</p>`,
+      repr: (g) => pulseSVG(g, true) },
+    { k: "GPX2", c: "--board",
+      text: (g) => `<h3>The TDC chip measures it</h3><p>The GPX2 notes which tick of its 8 MHz reference clock the edge fell in, and how far into that tick.</p><p data-depth="2">The stop result is in 1 ps units, because each 125 ns tick is divided into 125 000 parts.</p>`,
+      repr: (g) => `<dl class="kv"><dt>channel</dt><dd>STOP${g.ch}</dd><dt>reference index</dt><dd>${grp(g.ref.toString())} <span class="muted">(${hx(g.ref, 6)})</span></dd><dt>stop result</dt><dd>${grp(g.stop.toString())} ps into the tick</dd><dt>meaning</dt><dd>${grp(g.ref.toString())} × 125 000 + ${grp(g.stop.toString())} = ${grp(g.tgpx.toString())} ps</dd><dt data-depth="3">modulo</dt><dd data-depth="3">one index wrap, 2²⁴ ticks = 2 097 152 000 000 ps</dd></dl>` },
+    { k: "LVDS", c: "--board",
+      text: (g) => `<h3>Sent to the FPGA, bit by bit</h3><p>The chip sends the two numbers on channel ${g.ch}'s serial line, most significant bit first: 24 index bits and then 18 stop bits. A second line, FRAME, is high for the first 8 bits so the FPGA can see where the message starts.</p><p data-depth="2">At 250 MHz DDR each bit lasts 2 ns, so the whole message takes 84 ns.</p>`,
+      repr: (g) => {
+        const s = bin(g.ref, 24) + bin(g.stop, 18);
+        const f = "1".repeat(8) + "0".repeat(34);
+        return `<div class="muted" style="font-size:.8rem">SDO${g.ch}: <span style="color:var(--board)">reference index</span> · <span style="color:var(--host)">stop result</span></div>
+          <div class="bitstr"><span style="color:var(--board)">${s.slice(0, 24).replace(/(.{4})/g, "$1 ")}</span><span style="color:var(--host)">${s.slice(24).replace(/(.{4})/g, "$1 ")}</span></div>
+          <div class="muted" style="font-size:.8rem">FRAME${g.ch}:</div><div class="bitstr">${f.replace(/(.{4})/g, "$1 ")}</div>`;
+      } },
+    { k: "Record", c: "--fpga",
+      text: (g) => `<h3>The FPGA writes a record</h3><p>The FPGA decodes the message and adds its own clock reading at the moment the message completed. That reading is the <b>coarse time</b>: 8 ns per tick, counting since power-up. The event becomes one 64-bit record in the event queue.</p><p data-depth="2">Only the coarse time's lowest 16 bits fit in an event record. The host recovers the rest from TIME markers, which come at least every 131 µs.</p>`,
+      repr: (g) => `<dl class="kv"><dt>record</dt><dd>${hx(g.rec, 16)}</dd><dt>bit 63</dt><dd>0 = event</dd><dt>bits 62:61</dt><dd>channel ${g.ch - 1} (STOP${g.ch})</dd><dt>bits 59:44</dt><dd>coarse low 16 = ${hx(g.coarse & 0xFFFFn, 4)}</dd><dt>bits 43:20</dt><dd>reference index ${hx(g.ref, 6)}</dd><dt>bits 19:0</dt><dd>stop result ${hx(g.stop, 5)}</dd><dt data-depth="3">full coarse</dt><dd data-depth="3">${grp(g.coarse.toString())} ticks (${(Number(g.coarse) * 8e-9).toFixed(6)} s since power-up)</dd></dl>` },
+    { k: "Compact", c: "--fpga",
+      text: (g) => `<h3>Squeezed to 32 bits</h3><p>In a release 3 compact run, the frame builder rewrites the record as a <b>single 32-bit word</b>: stop result, channel and the low 12 bits of the index. The high 12 bits of the index go in a separate EPOCH word, sent only when they change. That happens at most every 512 µs.</p>`,
+      repr: (g) => `<dl class="kv"><dt>EPOCH word</dt><dd>${hx(g.epochWord, 8)} <span class="muted">(index bits 23:12 = ${hx(g.epoch, 3)}, only if changed)</span></dd><dt>event word</dt><dd>${hx(g.word, 8)}</dd><dt>bits 31:14</dt><dd>stop ${grp(g.stop.toString())}</dd><dt>bits 13:12</dt><dd>channel ${g.ch - 1}</dd><dt>bits 11:0</dt><dd>index low ${hx(g.low, 3)}</dd></dl><p class="muted" style="font-size:.85rem">The coarse time is dropped. The host gives the event the coarse time of the last marker.</p>` },
+    { k: "USB", c: "--link",
+      text: (g) => `<h3>Into a 4 KiB frame, over USB 3</h3><p>The word goes into the next DATA frame with up to 1006 others. The frame gets a header and a CRC and crosses the FT601 to the PC.</p><p data-depth="2">On the PC, <code>dt-receive</code> checks the frame, expands the word back into a 64-bit record, and queues it for decoding.</p>`,
+      repr: (g) => `<dl class="kv"><dt>frame</dt><dd>DATA, sequence ${grp(String(g.seq))} of this run</dd><dt>position</dt><dd>payload word ${g.payloadWord} of 16…1022</dd><dt>word 10</dt><dd>record format 2 (compact)</dd><dt>word 1023</dt><dd>CRC-32 over bytes 0–4091</dd></dl>` },
+    { k: "Time", c: "--host",
+      text: (g) => `<h3>Decoded: a time in picoseconds</h3><p>The decoder turns index and stop result into picoseconds. The index wraps every 2.1 s, so it uses the coarse clock to find which wrap this event is in. Then it adds the run's fixed offset to place the event on the session's timeline.</p><p data-depth="2">The coarse clock is only used to pick the right wrap. The time itself comes entirely from the GPX2, so it is exact to the picosecond.</p>`,
+      repr: (g) => `<dl class="kv"><dt>GPX2 time</dt><dd>${grp(g.tgpx.toString())} ps (within one wrap)</dd><dt>+ wraps</dt><dd>${grp(((g.t - g.K - g.tgpx) / 2097152000000n).toString())} × 2 097 152 000 000 ps</dd><dt>+ offset K</dt><dd>${grp(g.K.toString())} ps</dd><dt>tag time</dt><dd><b>${grp(g.t.toString())} ps</b></dd><dt data-depth="3">check</dt><dd data-depth="3">coarse ${grp(g.coarse.toString())} × 8000 = ${grp((g.coarse * 8000n).toString())} ps: the time plus ${DT.fmtTime(Number(g.coarse * 8000n - g.t))} of readout latency, as expected</dd></dl>` },
+    { k: "Merge", c: "--host",
+      text: (g) => `<h3>In time order with the other channels</h3><p>The engine thread adds channel ${g.ch}'s input delay (here 0) and merges the four channels. When the watermark has passed this time, the tag is final. Nothing earlier can still arrive, so it goes into a block with its neighbours, in order.</p>`,
+      repr: (g) => `<dl class="kv"><dt>input delay</dt><dd>0 ps</dd><dt>channel</dt><dd>${g.ch}</dd><dt>block</dt><dd>[… , ${grp(g.start.toString())} ps (ch 4, START), <b>${grp(g.t.toString())} ps (ch ${g.ch})</b>, …]</dd></dl>` },
+    { k: "Histogram", c: "--host",
+      text: (g) => `<h3>Counted</h3><p>A Histogram with channel 4 as start and channel ${g.ch} as click, 50 ps bins, gets this tag. It takes the difference from each recent start and adds one count to that bin. The app redraws ten times a second.</p>`,
+      repr: (g) => `<dl class="kv"><dt>click − start</dt><dd>${grp((g.t - g.start).toString())} ps</dd><dt>bin width</dt><dd>50 ps</dd><dt>bin</dt><dd><b>${g.bin}</b> → count + 1</dd><dt>bin covers</dt><dd>[${grp((g.bin * 50n).toString())}, ${grp((g.bin * 50n + 50n).toString())}) ps</dd></dl>` },
+  ];
+  let step = 0;
+  const stepsEl = document.getElementById("tagSteps");
+  STEPS.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.textContent = `${i + 1} ${s.k}`;
+    b.style.setProperty("--c", `var(${s.c})`);
+    b.addEventListener("click", () => { step = i; renderTag(); });
+    stepsEl.appendChild(b);
+  });
+  function renderTag() {
+    const s = STEPS[step];
+    stepsEl.querySelectorAll("button").forEach((b, i) => b.setAttribute("aria-current", i === step ? "step" : "false"));
+    document.getElementById("tagText").innerHTML = s.text(tag);
+    document.getElementById("tagRepr").innerHTML = s.repr(tag);
+    document.getElementById("tagRepr").style.borderLeft = `4px solid var(${s.c})`;
+    document.getElementById("tagPrev").disabled = step === 0;
+    document.getElementById("tagNext").disabled = step === STEPS.length - 1;
+    DT.setDepth(DT.level);
+  }
+  document.getElementById("tagPrev").addEventListener("click", () => { if (step > 0) { step--; renderTag(); } });
+  document.getElementById("tagNext").addEventListener("click", () => { if (step < STEPS.length - 1) { step++; renderTag(); } });
+  document.getElementById("tagNew").addEventListener("click", () => { newTag(); renderTag(); });
+
+  function pulseSVG(g, edge) {
+    const ch = `var(--ch${g.ch})`;
+    const th = 70 - parseFloat(g.threshold) * 400;
+    return `<svg viewBox="0 0 320 150" width="100%" role="img" aria-label="Detector pulse${edge ? " and comparator edge" : ""}" style="max-width:420px">
+      <text x="4" y="12" font-size="10" fill="var(--muted)" font-family="var(--f-mono)">input ${g.ch}</text>
+      <path d="M0 70 L90 70 C 110 70 112 14 122 14 C 135 14 150 66 200 69 L320 70" fill="none" stroke="${ch}" stroke-width="2"/>
+      <line x1="0" x2="320" y1="${th}" y2="${th}" stroke="var(--muted)" stroke-dasharray="4 3"/>
+      <text x="318" y="${th - 4}" font-size="10" text-anchor="end" fill="var(--muted)" font-family="var(--f-mono)">trigger ${g.threshold} V</text>
+      ${edge ? `<text x="4" y="98" font-size="10" fill="var(--muted)" font-family="var(--f-mono)">comparator</text>
+      <path d="M0 140 L111 140 L111 104 L160 104 L160 140 L320 140" fill="none" stroke="var(--board)" stroke-width="2"/>
+      <line x1="111" x2="111" y1="20" y2="146" stroke="var(--board)" stroke-width="1" stroke-dasharray="2 2"/>
+      <text x="116" y="122" font-size="10" fill="var(--board)" font-family="var(--f-mono)">the event</text>` : ""}
+    </svg>`;
+  }
+  renderTag();
+
+  // ---------------------------------------------------------------------------
+  // Time ladder
+  // ---------------------------------------------------------------------------
+  const RUNGS = [
+    [1, "GPX2 LSB", "one count of a stop result", "--board", 1],
+    [17.857, "MMCM phase step", "finest move of the FPGA's sampling instant", "--fpga", 3],
+    [44.12, "GPX2 internal step", "the true quantisation: codes sit on this lattice", "--board", 2],
+    [78, "IDELAY tap", "per-lane input delay step", "--fpga", 3],
+    [2000, "One LVDS bit", "250 MHz DDR: one FPGA sample per bit", "--fpga", 2],
+    [8000, "Coarse tick", "the FPGA clock that stamps every record", "--fpga", 1],
+    [15000, "FT601 bus cycle", "66.67 MHz, one 32-bit word", "--link", 3],
+    [84000, "One GPX2 message", "42 bits → at most 11.9 M events/s per channel", "--board", 2],
+    [125000, "Reference tick", "8 MHz: one reference-index count", "--board", 1],
+    [1928000, "Readout latency spread", "16-deep chip FIFO full, plus 0.5 µs", "--board", 3],
+    [131072000, "TIME marker period", "2¹⁴ coarse ticks: how often the full clock is sent", "--fpga", 2],
+    [585000000, "FPGA queue at full USB speed", "16 384 records ÷ 28 M/s", "--fpga", 3],
+    [1e9, "Frame flush / chunk push", "longest a record waits to be sent; decoder push interval", "--host", 2],
+    [2.097152e12, "Reference index wrap", "2²⁴ ticks: why the coarse clock is needed", "--board", 1],
+    [2.2518e18, "Coarse clock wrap", "48 bits × 8 ns ≈ 26 days", "--fpga", 3],
+  ];
+  const MAXLOG = 19;
+  function renderLadder() {
+    const lvl = DT.level;
+    const el = document.getElementById("ladder");
+    el.innerHTML = "";
+    RUNGS.filter((r) => r[4] <= lvl).forEach(([ps, name, what, c]) => {
+      const frac = Math.max(0.004, Math.log10(ps) / MAXLOG);
+      const row = document.createElement("div");
+      row.className = "rung";
+      row.style.setProperty("--c", `var(${c})`);
+      const val = ps >= 8.64e16 ? (ps / 8.64e16).toFixed(1) + " days" : DT.fmtTime(ps, 4);
+      row.innerHTML = `<div class="rung-label">${name}<small>${what}</small></div>
+        <div class="rung-track"><div class="rung-bar" style="width:${(frac * 100).toFixed(2)}%"></div>
+        <span class="rung-val" style="${frac > 0.78 ? `right:${((1 - frac) * 100 + 1).toFixed(2)}%;text-align:right` : `left:calc(${(frac * 100).toFixed(2)}% + 6px)`}">${val}</span></div>`;
+      el.appendChild(row);
+    });
+    const ticks = document.getElementById("ladderTicks");
+    ticks.innerHTML = [[0, "1 ps"], [3, "1 ns"], [6, "1 µs"], [9, "1 ms"], [12, "1 s"], [15.556, "1 h"], [16.937, "1 d"], [19, ""]]
+      .map(([l, t]) => `<span style="left:${(l / MAXLOG) * 100}%">${t}</span>`).join("");
+  }
+  renderLadder();
+  DT.onDepth(renderLadder);
+})();
+</script>

@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inside the FPGA · Dantagger</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  /* firmware map */
+  .map-box { overflow-x: auto; }
+  .map { width: 100%; min-width: 760px; height: auto; display: block; }
+  .map .mod { cursor: pointer; }
+  .map .mod rect { fill: var(--panel); stroke: var(--rule); stroke-width: 1.2; transition: fill 0.12s; }
+  .map .mod:hover rect, .map .mod:focus rect { fill: var(--sunk); }
+  .map .mod.sel rect { stroke: var(--fpga); stroke-width: 2.5; fill: var(--fpga-soft); }
+  .map .mod:focus { outline: none; }
+  .map .mod:focus-visible rect { stroke: var(--ink); stroke-width: 2.5; }
+  .map text { font-family: var(--f-body); fill: var(--ink); }
+  .map .t-mod { font-family: var(--f-display); font-weight: 600; font-size: 15px; }
+  .map .t-sub { font-size: 11px; fill: var(--muted); }
+  .map .t-dom { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .map .wire { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+  .map .wire.data { stroke: var(--fpga); stroke-width: 2.4; }
+  .map .wire-label { font-family: var(--f-mono); font-size: 10px; fill: var(--muted); }
+  .map .ext rect { fill: var(--board-soft); stroke: var(--board); stroke-width: 1.2; }
+  .map .ext.usb rect { fill: var(--link-soft); stroke: var(--link); }
+  .mod-detail { display: grid; gap: 0.7rem; max-width: 84ch; }
+  .mod-detail .meta { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-family: var(--f-mono); font-size: 0.8rem; color: var(--muted); }
+
+  /* calibration */
+  .cal-sweep { display: grid; gap: 4px; }
+  .sweep-row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.6rem; align-items: center; font-family: var(--f-mono); font-size: 0.75rem; color: var(--muted); }
+  .sweep-cells { display: flex; height: 16px; border-radius: 2px; overflow: hidden; background: var(--sunk); }
+  .sweep-cells i { flex: 1 1 0; min-width: 0; }
+
+  /* deserializer */
+  .lanes { display: grid; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .lane { display: grid; grid-template-columns: 4.6rem max-content; align-items: center; gap: 0.5rem; }
+  .lane-name { font-family: var(--f-mono); font-size: 0.75rem; color: var(--muted); position: sticky; left: 0; background: var(--panel); }
+  .cells { display: flex; gap: 0; }
+  .cells .cw { display: flex; gap: 1px; padding-right: 5px; margin-right: 5px; border-right: 1px dashed var(--rule); }
+  .cell { width: 17px; height: 24px; display: grid; place-items: center; font-family: var(--f-mono); font-size: 0.7rem; border-radius: 2px; background: var(--sunk); color: var(--muted); }
+  .cell.hi { color: var(--ink); font-weight: 700; }
+  .cell.f-ref { background: var(--board-soft); color: var(--board); }
+  .cell.f-stop { background: var(--host-soft); color: var(--host); }
+  .cell.f-err { background: var(--bad); color: var(--panel); }
+  .cell.f-frame1 { background: var(--fpga-soft); color: var(--fpga); }
+  .events-out { display: grid; gap: 0.3rem; font-family: var(--f-mono); font-size: 0.82rem; }
+
+  /* queue sim */
+  .qsim { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 1.2rem; }
+  @media (max-width: 820px) { .qsim { grid-template-columns: 1fr; } }
+  .lane-ctl { display: grid; grid-template-columns: 3.3rem minmax(0, 1fr) 4.8rem 1.2rem; gap: 0.5rem; align-items: center; font-size: 0.85rem; }
+  .lane-ctl input { width: 100%; }
+  .hold { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid currentColor; }
+  .hold.on { background: currentColor; }
+  .fifo-bar { position: relative; height: 26px; background: var(--sunk); border-radius: 4px; overflow: hidden; }
+  .fifo-fill { position: absolute; inset: 0 auto 0 0; background: var(--fpga); width: 0; }
+  .fifo-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--f-mono); font-size: 0.78rem; color: var(--ink); mix-blend-mode: normal; }
+  .ticker { display: flex; gap: 2px; flex-wrap: wrap; font-family: var(--f-mono); font-size: 0.68rem; min-height: 22px; }
+  .ticker span { padding: 0.05rem 0.25rem; border-radius: 2px; color: var(--panel); }
+
+  /* resources */
+  .res { display: grid; gap: 0.6rem; }
+  .res-row { display: grid; grid-template-columns: 11rem minmax(0, 1fr) 8.5rem; gap: 0.8rem; align-items: center; font-size: 0.9rem; }
+  @media (max-width: 640px) { .res-row { grid-template-columns: 6.5rem minmax(0, 1fr) 5.5rem; font-size: 0.8rem; } }
+  .res-track { height: 16px; background: var(--sunk); border-radius: 3px; position: relative; overflow: hidden; display: flex; }
+  .res-track i { display: block; height: 100%; }
+  .res-num { font-family: var(--f-mono); font-size: 0.8rem; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .life { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 0.5rem; counter-reset: life; }
+  .life li { list-style: none; background: var(--bg); border: 1px solid var(--rule); border-radius: 5px; padding: 0.6rem 0.7rem; font-size: 0.9rem; counter-increment: life; margin: 0; }
+  .life li::before { content: counter(life); display: block; font-family: var(--f-display); font-weight: 700; font-size: 1.3rem; color: var(--fpga); }
+  .life { padding: 0; margin: 0; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18h6l2-12 2 12h10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 21v-3M14 21v-3M18 21v-3M6 21v-3" stroke="currentColor" stroke-width="1.2"/></svg>
+      Dantagger
+    </a>
+    <nav class="nav" aria-label="Pages">
+      <a href="index.html"><span class="lvl">01</span>End to end</a>
+      <a href="fpga.html" aria-current="page"><span class="lvl">02</span>Inside the FPGA</a>
+      <a href="host.html"><span class="lvl">03</span>Inside the host</a>
+      <a href="formats.html"><span class="lvl">04</span>Bits on the wire</a>
+    </nav>
+    <div class="depth"><span>Detail</span>
+      <div class="seg" role="group" aria-label="Level of detail">
+        <button data-level="1" aria-pressed="true">Intuition</button><button data-level="2" aria-pressed="false">Mechanism</button><button data-level="3" aria-pressed="false">Exact</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="eyebrow c-fpga">Alchitry Au V2 · Artix-7 XC7A35T-2 · release 3 (design 0x54440003)</div>
+    <h1>Inside the FPGA</h1>
+    <p class="lede">The FPGA has two jobs. While idle it is a <b>controller</b>: it sets trigger levels, configures the TDC chip and calibrates the link to it. While streaming it is a <b>pipe</b>: it catches every result the TDC chip sends, stamps it with a clock, queues it, and pushes it to the PC in 4 KiB frames.</p>
+    <p class="muted" data-depth="2" style="max-width:72ch">5 359 lines of SystemVerilog in 12 modules (<code>TDC_Firmware/project_1/rtl/</code>), running in five clock domains. Hardware safety came first in every trade-off: every new FPGA output drives a chip input only, and the clock to the TDC chip stays switched off until the host turns it on.</p>
+  </div>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Map</div>
+      <h2>The firmware, by clock domain</h2>
+      <p class="muted" style="max-width:72ch">Each shaded band is one clock. Data flows along the thick green line, from the TDC chip at the bottom left to the USB chip on the right. Thin lines are control. Click a module.</p>
+    </div>
+    <div class="bench">
+      <div class="map-box">
+        <svg class="map" id="map" viewBox="0 0 1000 530" role="group" aria-label="Firmware module map">
+          <!-- domain bands -->
+          <rect x="250" y="14" width="318" height="242" rx="8" fill="var(--board-soft)" opacity="0.55"/>
+          <text class="t-dom" x="262" y="32" fill="var(--board)">Au clock · 100 MHz · control</text>
+          <rect x="250" y="272" width="318" height="244" rx="8" fill="var(--fpga-soft)" opacity="0.7"/>
+          <text class="t-dom" x="262" y="506" fill="var(--fpga)">LVDS clocks · 250 / 125 MHz · capture</text>
+          <rect x="652" y="14" width="214" height="502" rx="8" fill="var(--link-soft)" opacity="0.7"/>
+          <text class="t-dom" x="664" y="32" fill="var(--link)">FT clock · 66.67 MHz · USB</text>
+
+          <!-- external chips -->
+          <g class="ext"><rect x="14" y="44" width="190" height="78" rx="6"/><text class="t-mod" x="26" y="70">Comparator board</text><text class="t-sub" x="26" y="88">DAC, hysteresis pots, LEDs</text><text class="t-sub" x="26" y="104">+ TMP117 temperature</text></g>
+          <g class="ext"><rect x="14" y="150" width="190" height="66" rx="6"/><text class="t-mod" x="26" y="176">TDC-GPX2 · SPI</text><text class="t-sub" x="26" y="194">configuration registers</text></g>
+          <g class="ext"><rect x="14" y="300" width="190" height="170" rx="6"/><text class="t-mod" x="26" y="326">TDC-GPX2 · LVDS</text><text class="t-sub" x="26" y="346">SDO1–4 data, FRAME1–4</text><text class="t-sub" x="26" y="362">LCLKOUT (looped clock)</text><text class="t-sub" x="26" y="378">LCLKIN ← from FPGA</text><text class="t-sub" x="26" y="410">one 42-bit message</text><text class="t-sub" x="26" y="426">per event per channel</text></g>
+          <g class="ext usb"><rect x="890" y="200" width="100" height="130" rx="6"/><text class="t-mod" x="902" y="228">FT601</text><text class="t-sub" x="902" y="246">USB 3 bridge</text><text class="t-sub" x="902" y="262">32-bit bus</text><text class="t-sub" x="902" y="278">→ PC</text></g>
+
+          <!-- wires -->
+          <path class="wire" d="M204 82 H270"/><text class="wire-label" x="212" y="76">SPI, I²C</text>
+          <path class="wire" d="M204 183 H270"/><text class="wire-label" x="212" y="177">SPI 1 MHz</text>
+          <path class="wire data" d="M204 360 H270"/><text class="wire-label" x="208" y="352">8 lanes</text>
+          <path class="wire" d="M270 440 H204" marker-end="url(#arr)"/><text class="wire-label" x="210" y="456">LCLKIN</text>
+          <path class="wire data" d="M384 395 H404"/>
+          <path class="wire data" d="M552 410 H582"/>
+          <path class="wire data" d="M690 410 H700"/>
+          <path class="wire data" d="M846 265 H890"/>
+          <path class="wire" d="M546 140 H700"/><text class="wire-label" x="576" y="132">handshake</text>
+          <path class="wire" d="M402 82 H430"/><path class="wire" d="M402 183 H430"/>
+          <path class="wire" d="M488 232 V330"/><text class="wire-label" x="494" y="270">settings, link test</text>
+          <path class="wire" d="M450 232 V300 H330 V312"/><text class="wire-label" x="338" y="296">phase shift</text>
+          <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="var(--muted)"/></marker></defs>
+
+          <!-- modules -->
+          <g class="mod" data-mod="board_ctrl" tabindex="0" role="button"><rect x="270" y="50" width="132" height="66" rx="6"/><text class="t-mod" x="282" y="76">board_ctrl</text><text class="t-sub" x="282" y="94">+ spi_master, i2c_master</text></g>
+          <g class="mod" data-mod="gpx_ctrl" tabindex="0" role="button"><rect x="270" y="150" width="132" height="66" rx="6"/><text class="t-mod" x="282" y="176">gpx_ctrl</text><text class="t-sub" x="282" y="194">GPX2 SPI operations</text></g>
+          <g class="mod" data-mod="sys_ctrl" tabindex="0" role="button"><rect x="430" y="50" width="126" height="182" rx="6"/><text class="t-mod" x="442" y="76">sys_ctrl</text><text class="t-sub" x="442" y="94">runs every</text><text class="t-sub" x="442" y="108">command;</text><text class="t-sub" x="442" y="122">snapshots for</text><text class="t-sub" x="442" y="136">each response</text></g>
+          <g class="mod" data-mod="lvds_phy" tabindex="0" role="button"><rect x="270" y="312" width="114" height="168" rx="6"/><text class="t-mod" x="282" y="338">lvds_phy</text><text class="t-sub" x="282" y="356">MMCM clocks</text><text class="t-sub" x="282" y="370">IDELAY, ISERDES</text><text class="t-sub" x="282" y="384">500 MS/s/lane</text><text class="t-sub" x="282" y="414">LCLKIN output</text><text class="t-sub" x="282" y="428">(off until enabled)</text></g>
+          <g class="mod" data-mod="lvds_rx" tabindex="0" role="button"><rect x="404" y="330" width="148" height="150" rx="6"/><text class="t-mod" x="416" y="356">lvds_rx</text><text class="t-sub" x="416" y="374">decimator, coarse time</text><text class="t-sub" x="416" y="388">4 × gpx_deser</text><text class="t-sub" x="416" y="402">holding registers</text><text class="t-sub" x="416" y="416">record arbiter</text><text class="t-sub" x="416" y="430">TIME markers</text><text class="t-sub" x="416" y="444">link-test counters</text></g>
+          <g class="mod" data-mod="fifo" tabindex="0" role="button"><rect x="582" y="378" width="108" height="64" rx="6"/><text class="t-mod" x="594" y="404">event FIFO</text><text class="t-sub" x="594" y="422">16 384 × 64 bit</text></g>
+          <g class="mod" data-mod="tdc_engine" tabindex="0" role="button"><rect x="700" y="50" width="146" height="300" rx="6"/><text class="t-mod" x="712" y="76">tdc_engine</text><text class="t-sub" x="712" y="96">command receive</text><text class="t-sub" x="712" y="110">and all checks</text><text class="t-sub" x="712" y="130">responses</text><text class="t-sub" x="712" y="150">run state</text><text class="t-sub" x="712" y="170">DATA frames</text><text class="t-sub" x="712" y="184">compact packer</text><text class="t-sub" x="712" y="204">bus ownership,</text><text class="t-sub" x="712" y="218">TXE gate, gaps</text></g>
+          <g class="mod" data-mod="top_tdc" tabindex="0" role="button"><rect x="700" y="436" width="146" height="64" rx="6"/><text class="t-mod" x="712" y="462">top_tdc</text><text class="t-sub" x="712" y="480">wiring, bus supervisor</text></g>
+        </svg>
+      </div>
+      <div class="mod-detail" id="modDetail" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Two modes</div>
+      <h2>Controller when idle, pipe when streaming</h2>
+    </div>
+    <div class="grid cols-2">
+      <div class="prose">
+        <h4>Configuration mode (the default)</h4>
+        <p>The PC sends one command at a time in a 4 KiB frame. The FPGA checks it, carries it out, and answers with a 4 KiB response. The response also reports the board's whole state: trigger levels read back, the GPX2 registers, link counters, temperature, and the last run's counts.</p>
+        <p data-depth="2">The commands set trigger levels and hysteresis, configure, initialise and reset the GPX2, set the LVDS sampling point (LVDS_SET, LVDS_PHASE), and count test-pattern frames (LINK_TEST). The full list is on <a href="formats.html#commands">Bits on the wire</a>.</p>
+      </div>
+      <div class="prose">
+        <h4>Streaming mode</h4>
+        <p>After START, the FPGA sends DATA frames until STOP arrives or a set time window ends. While it streams it answers only <b>STATUS</b> and <b>STOP</b>. Every other command gets BUSY and does nothing. That is why changing a trigger level during a measurement means stopping, applying and restarting.</p>
+        <p data-depth="2">START is refused (NOT_READY) unless the GPX2 is measuring with a verified configuration, LCLKIN is on, and the LVDS clocks are locked. A compact START also needs a 12- to 24-bit reference index and at most 18 stop bits.</p>
+      </div>
+    </div>
+    <div class="bench" data-depth="2">
+      <div class="bench-title">The life of one command</div>
+      <ol class="life">
+        <li><b>Receive.</b> <code>tdc_engine</code> reads a 4096-byte COMMAND frame from the FT601.</li>
+        <li><b>Check.</b> It checks the magic, version, CRC, zero padding and the GPX2 board rules. A bad frame is dropped silently and counted.</li>
+        <li><b>Hand over.</b> Over a four-phase handshake (req, copy, ack), the engine passes the opcode and arguments to <code>sys_ctrl</code> in the 100 MHz domain.</li>
+        <li><b>Do it.</b> <code>sys_ctrl</code> runs <code>board_ctrl</code>, <code>gpx_ctrl</code> or an <code>lvds_rx</code> request: SPI, I²C, phase steps or a link test.</li>
+        <li><b>Snapshot.</b> It copies the run counters and board results while nothing is changing them.</li>
+        <li><b>Respond.</b> The engine builds the RESPONSE: 113 fields, the transaction ID echoed, and a CRC.</li>
+      </ol>
+      <p class="note" data-depth="3">Fields cross between clock domains only while they are held stable. The other domain copies them two or three cycles after it sees <code>req</code>, and the result words change only between that copy and <code>ack</code>. A request that is not acknowledged in time is abandoned and flagged (field 58 bit 10).</p>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Catching bits</div>
+      <h2>Finding the right moment to sample</h2>
+      <p class="muted" style="max-width:72ch">The FPGA makes the GPX2's clock, and the data comes back after an unknown delay through the chip and the cables. At 250 MHz DDR a bit lasts only 2 ns, and near each bit edge the value is unreliable. Calibration slides the sampling instant across the bit while the GPX2 sends a known test pattern, and settles in the middle of the widest error-free stretch.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">LCLKIN and data rate
+          <select id="calMode">
+            <option value="0,1">250 MHz DDR · 2 ns bits (default)</option>
+            <option value="0,0">250 MHz SDR · 4 ns bits</option>
+            <option value="1,1">125 MHz DDR · 4 ns bits</option>
+            <option value="1,0">125 MHz SDR · 8 ns bits</option>
+            <option value="2,0">62.5 MHz SDR · 16 ns bits</option>
+          </select>
+        </label>
+        <label class="control">Bit phase <output id="bpOut">0</output><input type="range" id="bp" min="0" max="0" value="0"></label>
+        <label class="control">Phase step (17.857 ps each) <output id="phOut">0</output><input type="range" id="ph" min="0" max="111" value="56"></label>
+        <button class="btn primary" id="calRun">Run calibration</button>
+        <button class="btn" id="calBoard">Another board</button>
+      </div>
+      <div class="canvas-box"><canvas id="eye" aria-label="Eye diagram with the sampling instant"></canvas></div>
+      <div class="stat-row" id="calStats"></div>
+      <div class="cal-sweep" id="sweep"></div>
+      <div class="note" data-depth="2">The sampling instant within a bit is <b>(bit phase mod N) × 2 ns + phase step × 17.857 ps</b>. N is the number of 2 ns samples per bit: 1 at 250 MHz DDR, 16 at 31.25 MHz SDR. Each point of the sweep runs a LINK_TEST. A point is good only if every lane decoded frames with the right pattern and no structure errors. The real board (2026-10-22) calibrated at 250 MHz DDR at phase step 31, with 0 wrong events in about 117 M test-pattern events afterwards.</div>
+      <div class="note" data-depth="3">This model puts a ±225 ps uncertain zone around each data edge and a random delay per board. The real procedure is <code>tdcctl::Session::calibrate</code>. It configures the GPX2 with <code>LVDS_TEST_PATTERN</code> = 1 (reference index 0xF0CCAA, stop 0x0AACF0, truncated to the widths) and sweeps every bit phase with phase steps of max(1, N·112/100). It picks the centre of the widest circular run of good points, runs a 10× longer final link test there, and restores the real configuration. The result goes into the state file (<code>~/.local/state/dantagger/&lt;serial&gt;.release2.json</code>), so later opens skip calibration until the next power cycle.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Reading a message</div>
+      <h2>The frame decoder</h2>
+      <p class="muted" style="max-width:72ch">Each channel has two lanes. <b>SDO</b> carries the bits. <b>FRAME</b> is high for the first 8 bits of each message, so a rising FRAME marks a start. After 42 bits the decoder has one event: a 24-bit reference index and an 18-bit stop result. Edit the values, or add a glitch on FRAME.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Reference index (0–16 777 215)<input type="number" id="dsRef" min="0" max="16777215" value="3818994" class="mono"></label>
+        <label class="control">Stop result, ps (0–124 999)<input type="number" id="dsStop" min="0" max="124999" value="61234" class="mono"></label>
+        <label class="control"><span><input type="checkbox" id="dsGlitch"> glitch on FRAME (bit 5 of the first message)</span></label>
+        <label class="control"><span><input type="checkbox" id="dsTwo" checked> a second message right after</span></label>
+      </div>
+      <div class="lanes" id="lanes"></div>
+      <div class="legend"><span><span class="sw" style="background:var(--fpga)"></span>FRAME high</span><span><span class="sw" style="background:var(--board)"></span>reference index bits</span><span><span class="sw" style="background:var(--host)"></span>stop result bits</span><span><span class="sw" style="background:var(--bad)"></span>structure error</span><span data-depth="2">Dashed lines: the 4-bit words the decoder takes per 8 ns cycle</span></div>
+      <div class="events-out" id="dsOut"></div>
+      <div class="note" data-depth="3"><code>gpx_deser.sv</code> evaluates the four bits of a word in parallel. Within a word a frame either continues from the last word, where its position is known, or starts in this word. A frame that starts in a word is at most 3 bits old, so FRAME must still be high and it cannot complete there (frames have at least 14 bits). At most one frame completes per word. The result is checked against a bit-serial reference decoder (<code>tb_gpx_deser</code>: 72 streams, 17 137 frames, 19 607 structure errors, widths 14–44).</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">The event queue</div>
+      <h2>Four channels, one queue, a USB link that sometimes pauses</h2>
+      <p class="muted" style="max-width:72ch">Each channel's newest event waits in a holding register until the arbiter writes it into the queue, one record per 8 ns cycle. The queue drains to USB. Push the rates past what the link carries, or pause the PC, and watch the queue fill, events drop, and OVERFLOW markers record the losses.</p>
+    </div>
+    <div class="bench">
+      <div class="qsim">
+        <div style="display:grid;gap:.7rem;align-content:start">
+          <div class="lane-ctl muted" style="font-size:.75rem"><span>channel</span><span>rate into the FPGA</span><span></span><span title="holding register">hold</span></div>
+          <div id="laneCtls" style="display:grid;gap:.45rem"></div>
+          <label class="control">USB link
+            <select id="qLink">
+              <option value="28e6,1">USB 3, 64-bit records · 28 M records/s (measured)</option>
+              <option value="56e6,2" selected>USB 3, compact words · ≈ 56 M words/s (estimate)</option>
+              <option value="5.8e6,1">USB 2, 64-bit records · ≈ 5.8 M records/s (measured)</option>
+            </select>
+          </label>
+          <div class="controls">
+            <button class="btn" id="qPause">Pause the PC for 2 ms</button>
+            <button class="btn" id="qRun">Pause simulation</button>
+            <button class="btn" id="qReset">Reset</button>
+          </div>
+          <label class="control">Speed: simulated time per second <output id="qSpeedOut"></output><input type="range" id="qSpeed" min="0" max="4" step="1" value="2"></label>
+        </div>
+        <div style="display:grid;gap:.8rem;align-content:start;min-width:0">
+          <div>
+            <div class="muted" style="font-size:.82rem;margin-bottom:.25rem">Event FIFO fill (16 384 records)</div>
+            <div class="fifo-bar"><div class="fifo-fill" id="qFill"></div><div class="fifo-label" id="qFillLbl"></div></div>
+          </div>
+          <div class="canvas-box"><canvas id="qChart" aria-label="FIFO fill over time"></canvas></div>
+          <div class="stat-row" id="qStats"></div>
+          <div>
+            <div class="muted" style="font-size:.82rem;margin-bottom:.25rem">Last records written: <b>S</b>TART, <b>T</b>IME, <b>O</b>VERFLOW, events by channel</div>
+            <div class="ticker" id="qTicker"></div>
+          </div>
+        </div>
+      </div>
+      <div class="note" data-depth="2">The arbiter's priority is START, then OVERFLOW (if any events were dropped), then TIME (when the coarse clock's low 14 bits wrap), then the holding registers with channel 1 first, then END. An event is dropped when it waits more than 8 cycles, or when its channel's next event arrives while the register is still full. Markers wait for space and are never dropped. So the first record after the queue has been full is a marker with the full 48-bit coarse time.</div>
+      <div class="note" data-depth="3">This simulates every 8 ns cycle. Arrivals per channel are random, but never closer than one 84 ns GPX2 message, as on the real link. The real pipeline is <code>lvds_rx.sv</code> (arbiter in its <code>always_comb</code>, HOLD_LIMIT = 8, TIME_MARK_BITS = 14) feeding an XPM async FIFO (first-word-fall-through, write 125 MHz, read 66.67 MHz). The link rate here is a steady average. The real FT601 moves 4 KiB frames in bursts and needs 16 idle cycles after each DATA frame (128 after every 8th). The compact rate is an estimate: twice the measured 64-bit rate, less a TIME marker (3 words) every 131 µs and the EPOCH words.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Out to USB</div>
+      <h2>Building DATA frames</h2>
+    </div>
+    <div class="grid cols-2">
+      <div class="prose">
+        <p><code>tdc_engine</code> reads records out of the queue and builds 4 KiB DATA frames in block RAM, one 32-bit word per FT clock, computing the CRC as it goes. Two DATA frame slots and one RESPONSE slot share the RAM, so one frame can be filled while another is sent.</p>
+        <p>A frame starts when <b>a full frame's worth is waiting</b> (503 records, or 1007 compact words), when records have <b>waited 1 ms</b>, or <b>at once</b> while the run ends. STOP drains everything already captured, and its response follows the last DATA frame.</p>
+      </div>
+      <div class="prose" data-depth="2">
+        <p><b>Compact packing.</b> Each record leaving the queue becomes one 32-bit word (an event), or two (an event whose index bits 23:12 changed: EPOCH first), or three (a marker: HEAD, HI, LO). A record never straddles two frames, and PAD words fill the rest of a frame. An event whose stop result would look like a marker word (bits 17:12 all ones, ≥ 258 048: impossible with 125 000 divisions unless the link is corrupt) is dropped and counted in field 111.</p>
+        <p data-depth="3"><b>Bus etiquette.</b> These rules are carried over unchanged from the Test_project engines that ran on hardware. One ownership register; a grant only after idle cycles; RD_N only after OE_N has been low for a cycle; WR_N only after the FPGA has driven the bus for a cycle; every FT601-facing pin an IOB register. No frame starts while TXE_N is high, and released cycles follow DATA frames so a waiting STOP is always read.</p>
+      </div>
+    </div>
+    <p><a href="formats.html#frame">See the frame word by word on Bits on the wire →</a></p>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Budget</div>
+      <h2>How much of the chip this uses</h2>
+      <p class="muted" style="max-width:72ch">From the release 3 build reports (<code>project_1/build/tdc_r3/reports/utilization.rpt</code>). Logic is about a third used. Block RAM is the scarce resource, and the event queue takes most of it.</p>
+    </div>
+    <div class="bench">
+      <div class="res" id="res"></div>
+      <div class="legend"><span><span class="sw" style="background:var(--fpga)"></span>used</span><span><span class="sw" style="background:var(--host)"></span>block RAM: event FIFO (32 tiles)</span><span><span class="sw" style="background:var(--link)"></span>block RAM: frame buffers (4 tiles)</span></div>
+      <div class="grid cols-3" data-depth="2">
+        <div class="stat"><b>+0.029 ns</b><span>worst setup slack (FT601 output path, as in the earlier releases)</span></div>
+        <div class="stat"><b>+0.068 ns</b><span>worst hold slack</span></div>
+        <div class="stat"><b>+0.579 ns</b><span>slack in the 125 MHz receive clock</span></div>
+      </div>
+      <div class="scroll-x" data-depth="3">
+        <table>
+          <thead><tr><th>Clock</th><th class="num">Frequency</th><th>Drives</th></tr></thead>
+          <tbody>
+            <tr><td><code>au_clk_100mhz</code></td><td class="num">100 MHz</td><td>sys_ctrl, board_ctrl, gpx_ctrl, bus supervisor; MMCM input</td></tr>
+            <tr><td><code>lclk_tx</code></td><td class="num">250 MHz</td><td>LCLKIN generation (ODDR), fixed phase</td></tr>
+            <tr><td><code>lclk_rxf</code></td><td class="num">250 MHz</td><td>ISERDESE2 sampling on both edges (500 MS/s), fine phase-shifted</td></tr>
+            <tr><td><code>lclk_rx</code></td><td class="num">125 MHz</td><td>lvds_rx, deserializers, coarse time (8 ns), FIFO write; phase-shifted with lclk_rxf</td></tr>
+            <tr><td>IDELAYCTRL ref</td><td class="num">200 MHz</td><td>calibrates the 78 ps IDELAY taps</td></tr>
+            <tr><td><code>ft_clk_66mhz</code></td><td class="num">66.67 MHz</td><td>tdc_engine, FIFO read, the FT601 bus</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Safety and proof</div>
+      <h2>Why it should not hurt the board</h2>
+    </div>
+    <div class="grid cols-2">
+      <ul class="prose">
+        <li>Every new FPGA output drives a chip <b>input</b> only. The only two-way pins are the FT601 bus (proven in earlier projects) and open-drain I²C, which can only pull low or let go.</li>
+        <li>LCLKIN, the clock to the GPX2, is <b>high-impedance</b> from power-up until the host enables it, and goes off again after each stream or link test.</li>
+        <li>DISABLE and RSTIDX are tied low, the same level as the board's pull-downs. The GPX2 chip select starts high.</li>
+        <li>The bus supervisor releases the FT601 bus only while the FT clock is measured at 66.67 MHz and the MMCM is locked.</li>
+      </ul>
+      <ul class="prose" data-depth="2">
+        <li><b>Simulation:</b> the full top-level bench passes (185 responses, 86 DATA frames, 33 compact) with the Xilinx ISERDES model.</li>
+        <li><b>Mutation campaign:</b> 67 deliberate bugs put into the RTL, and every non-equivalent one caught by a testbench failure.</li>
+        <li><b>Cross-check:</b> the host's decoder reads all 271 frames the RTL produced, and its software packer reproduces the compact frames word for word.</li>
+        <li><b>Hardware:</b> release 2 ran on the board on 2026-10-22. Release 3 has <b>not</b> been loaded yet.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="next-page">
+    <a href="index.html">← End to end<small>The whole chain</small></a>
+    <a href="host.html">Inside the host →<small>Threads, decoding, measurements</small></a>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+(function () {
+  // ===========================================================================
+  // Module map
+  // ===========================================================================
+  const MODS = {
+    top_tdc: { f: "top_tdc.sv", n: 419, dom: "all",
+      d1: "The top level: it wires everything together, instantiates the event FIFO, drives the LEDs, and holds the FT601 bus supervisor.",
+      d2: "The FT601 side is identical to Comparator_Control release 1 and Test_project releases 9 and 10. The supervisor releases the bus's safety chain only while <code>ft_clock_identifier</code> classifies the FT clock as 66.67 MHz and the MMCM is locked. It asserts it again at once on any loss and recovers by itself. FT_RESET_N is constant high and WAKEUP_N high-impedance.",
+      d3: "EVENT_FIFO_DEPTH = 16384 (release 2: 8192). The design version constant 0x54440003 is checked by a build gate. LEDs, unless the host has set its own pattern: LED0 heartbeat, 1 FT link up, 2 board boot done, 3 GPX2 verified, 4 LCLKIN on, 5 streaming, 6 TMP117 OK, 7 any fault since reset." },
+    tdc_engine: { f: "tdc_engine.sv", n: 1412, dom: "FT 66.67 MHz",
+      d1: "Talks to the PC. It receives and checks commands, sends responses, and while streaming turns queued records into 4 KiB DATA frames.",
+      d2: "It checks every rule of the protocol before anything happens: magic, version, CRC, zero padding, argument ranges and every GPX2 board rule (REFCLK from the board's clock chip, fixed bits, LVDS on all inputs). The run state machine handles START, STOP and the window end (RUN_COMPLETE). In release 3 the frame generator also packs records into compact words.",
+      d3: "Two DATA slots and one RESPONSE slot in one block RAM; a word-per-cycle generator with a word-wise CRC-32; frames start at 503 records (compact: 1007 words), after FLUSH_CYCLES (1 ms), or at once while a run ends; the final response is built after a last handshake, so its counters are current; at least 16 released FT cycles after every DATA frame and 128 after every 8th." },
+    sys_ctrl: { f: "sys_ctrl.sv", n: 623, dom: "Au 100 MHz",
+      d1: "The controller. The engine hands it each command, it does the work, and it hands back the results for the response.",
+      d2: "Operation codes: 0 for none (STATUS, STOP, START and rejected commands: only snapshots), 1–6 for comparator operations, 8–12 for the GPX2 (CONFIGURE, READ_CONFIG, RESET, INIT, READ_RESULTS), 16 LVDS_SET, 17 LVDS_PHASE, 18 LINK_TEST. Every operation ends with a snapshot of the run counters and a copy of the board results, so every response is current.",
+      d3: "It ends the engine's four-phase handshake: the fields are copied three cycles after req is seen, the result words change only between that copy and ack, and the engine copies them after ack. LVDS_PHASE steps the MMCM fine phase up or down without wrapping, so a phase step always means the true shift from lock. Requests to lvds_rx have a timeout (field 58 bit 10)." },
+    board_ctrl: { f: "board_ctrl.sv + spi_master.sv + i2c_master.sv", n: 1211, dom: "Au 100 MHz",
+      d1: "Sets the comparator board's trigger levels, hysteresis and LEDs, and reads the temperature.",
+      d2: "Unchanged from Comparator_Control release 1, which works on hardware: DAC codes over SPI, hysteresis pot wipers and the AW2013 LED driver over I²C, and an MCP23S08 expander. TMP117 temperature added: read on PROBE and READBACK, and polled every second by itself without touching the comparator error fields.",
+      d3: "The SPI outputs are IOB registers with the chip selects preset high. The I²C lines are IOBUFs whose data input is constant 0, so they only pull low or release. DAC_CODE_MAX = 41953." },
+    gpx_ctrl: { f: "gpx_ctrl.sv", n: 467, dom: "Au 100 MHz",
+      d1: "Configures the TDC-GPX2 over SPI and checks that it took the configuration.",
+      d2: "CONFIGURE powers the chip's logic off and on, writes registers 0–16, reads them back, and only if all 17 match sends INIT and reads them back again. The status is OK only if both readbacks matched. It also sets the capture format (bits per field, SDR or DDR) that the receive side uses.",
+      d3: "SPI mode 1 at 1 MHz; every access starts with an SSN high pulse. Opcodes: 0x30 power, 0x80 + a write, 0x40 + a read config, 0x18 init, 0x60 + a read results. 1 ms waits after power and init. The GPX2 flags (field 38) record configured, verified and measuring, plus the PARITY and INTERRUPT pins." },
+    lvds_phy: { f: "lvds_phy.sv", n: 290, dom: "MMCM: 250 / 125 / 200 MHz",
+      d1: "The physical layer: it makes the clocks, generates the GPX2's clock, and samples the eight incoming lines every 2 ns.",
+      d2: "One MMCM (VCO 1 GHz from the Au's 100 MHz) makes lclk_tx (250 MHz, makes LCLKIN), lclk_rxf (250 MHz, sampling), lclk_rx (125 MHz, receive logic) and 200 MHz for the delay calibration. The sampling clocks can be phase-shifted in 17.857 ps steps. LCLKIN and the sampling come from the same VCO, so only the phase is unknown, and calibration finds it.",
+      d3: "Inputs: IBUFDS (LVDS_25, DIFF_TERM) → IDELAYE2 (78 ps taps) → ISERDESE2 (DDR 1:4 NETWORKING) → one fabric register. LCLKOUT is only sampled, never used as a clock (it is in another bank). LCLKIN: ODDR → OBUFTDS with a tri-state register preset to high-impedance. LCLKIN = 250 MHz / 2^div from a free-running counter, so it never exceeds 250 MHz, even while the divider changes." },
+    lvds_rx: { f: "lvds_rx.sv + 4 × gpx_deser.sv", n: 801, dom: "lclk_rx 125 MHz",
+      d1: "Turns the sampled lines into events: it finds each message, extracts the numbers, stamps the coarse time, and feeds the queue.",
+      d2: "A decimator keeps one sample per bit (bit phase), a gearbox makes 4-bit words, and four deserializers find frames. Each completed frame gets the coarse time (an 8 ns counter since power-up) and goes to its channel's holding register. The arbiter writes one record per cycle: markers first, then events. It also has the LINK_TEST counters and the LCLKOUT histogram used for calibration.",
+      d3: "Frame pipeline: stage 1 holds the bits and coarse[15:0], stage 2 extracts ref and stop with masks from the configured widths and compares them with the test pattern. TIME marker when coarse[13:0] wraps. Holding registers: an event older than HOLD_LIMIT = 8 cycles, or overwritten by its lane's next event, is dropped and counted in drop_since (saturating at 4095), and that count goes out as the next OVERFLOW marker. Settings arrive by a four-phase handshake (APPLY, LINK_TEST, SNAPSHOT)." },
+    fifo: { f: "xpm_fifo_async in top_tdc.sv", n: 0, dom: "125 MHz → 66.67 MHz",
+      d1: "The buffer between capture and USB: 16 384 records, about 0.6 ms of the link's full speed.",
+      d2: "It is written in the 125 MHz receive clock and read in the FT601's 66.67 MHz clock, so it is also where data crosses clock domains safely. Writes happen only while it is not full, so it can never overflow. When it is full, events wait in their holding registers and then drop.",
+      d3: "Xilinx XPM async FIFO, 64 bits wide, first-word-fall-through, 32 RAMB36 tiles. Its gray-code pointer synchronizers carry set_bus_skew constraints (applied by hand in this non-project flow, checked by a build gate). Release 2 had 8192 records. The highest fill of each run is reported in field 101." },
+  };
+  const modDetail = document.getElementById("modDetail");
+  let sel = "lvds_rx";
+  function renderMod() {
+    const m = MODS[sel];
+    document.querySelectorAll("#map .mod").forEach((g) => g.classList.toggle("sel", g.dataset.mod === sel));
+    const lvl = DT.level;
+    modDetail.innerHTML = `<h3>${sel === "fifo" ? "Event FIFO" : sel}</h3>
+      <div class="meta"><span>${m.f}</span>${m.n ? `<span>${DT.fmtInt(m.n)} lines</span>` : ""}<span>clock: ${m.dom}</span></div>
+      <p>${m.d1}</p>
+      ${lvl >= 2 ? `<p><span class="depth-tag">Mechanism</span>${m.d2}</p>` : ""}
+      ${lvl >= 3 ? `<p><span class="depth-tag">Exact</span>${m.d3}</p>` : `<p class="muted" style="font-size:.88rem">More at ${lvl === 1 ? "Mechanism and Exact" : "Exact"} detail.</p>`}`;
+  }
+  document.querySelectorAll("#map .mod").forEach((g) => {
+    const go = () => { sel = g.dataset.mod; renderMod(); };
+    g.addEventListener("click", go);
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+  renderMod();
+  DT.onDepth(renderMod);
+
+  // ===========================================================================
+  // LVDS calibration model
+  // ===========================================================================
+  const STEP_PS = 1e6 / 56000;         // 17.857 ps
+  const SAMPLE_PS = 2000;
+  const ZONE = 450;                    // uncertain zone around each data edge, ps (total)
+  let cal = { div: 0, ddr: 1, delay: 6731, sweep: null, chosen: null, running: false };
+  const calMode = document.getElementById("calMode"), bp = document.getElementById("bp"), ph = document.getElementById("ph");
+  function N() { return 1 << (cal.div + (cal.ddr ? 0 : 1)); }
+  function bitPs() { return N() * SAMPLE_PS; }
+  function sampleAt(b, p) { return (b % N()) * SAMPLE_PS + p * STEP_PS; }
+  function edgeDist(s) {           // distance from s to the nearest data edge, ps
+    const bit = bitPs();
+    const x = (((s - cal.delay) % bit) + bit) % bit;
+    return Math.min(x, bit - x);
+  }
+  function good(s) { return edgeDist(s) > ZONE / 2; }
+  function setMode() {
+    const [d, r] = calMode.value.split(",").map(Number);
+    cal.div = d; cal.ddr = r; cal.sweep = null; cal.chosen = null;
+    bp.max = String(N() - 1);
+    if (+bp.value > N() - 1) bp.value = "0";
+    drawCal();
+  }
+  calMode.addEventListener("change", setMode);
+  bp.addEventListener("input", drawCal);
+  ph.addEventListener("input", drawCal);
+  document.getElementById("calBoard").addEventListener("click", () => {
+    cal.delay = 5000 + Math.random() * 5000; cal.sweep = null; cal.chosen = null; drawCal();
+  });
+  document.getElementById("calRun").addEventListener("click", () => {
+    if (cal.running) return;
+    const per = 112, step = Math.max(1, Math.floor((N() * per) / 100));
+    const pts = [];
+    for (let b = 0; b < N(); b++) for (let p = 0; p < per; p += step) pts.push({ b, p, s: sampleAt(b, p), g: null });
+    cal.sweep = pts; cal.chosen = null; cal.running = true;
+    let i = 0;
+    const per_frame = Math.max(1, Math.ceil(pts.length / 60));
+    (function tick() {
+      for (let k = 0; k < per_frame && i < pts.length; k++, i++) {
+        pts[i].g = good(pts[i].s);
+        bp.value = pts[i].b; ph.value = pts[i].p;
+      }
+      drawCal();
+      if (i < pts.length) { requestAnimationFrame(tick); return; }
+      // widest circular run of good points; its centre
+      const n = pts.length; let bestLen = 0, bestStart = 0;
+      for (let s = 0; s < n; s++) { let len = 0; while (len < n && pts[(s + len) % n].g) len++; if (len > bestLen) { bestLen = len; bestStart = s; } }
+      if (bestLen > 0) {
+        const c = pts[(bestStart + Math.floor(bestLen / 2)) % n];
+        cal.chosen = { b: c.b, p: c.p, width: bestLen === n ? bitPs() : bestLen * step * STEP_PS };
+        bp.value = c.b; ph.value = c.p;
+      }
+      cal.running = false;
+      drawCal();
+    })();
+  });
+
+  function drawCal() {
+    const cv = document.getElementById("eye");
+    const { ctx, w, h } = DT.canvas(cv, 200);
+    const bit = bitPs();
+    const span = 2 * bit;                     // show two bits
+    const x0 = 40, x1 = w - 10, y0 = 26, y1 = h - 34;
+    const X = (ps) => x0 + ((ps) / span) * (x1 - x0);
+    const ink = DT.color("--ink"), muted = DT.color("--muted"), rule = DT.color("--rule"), fp = DT.color("--fpga"), bad = DT.color("--bad"), board = DT.color("--board");
+    ctx.clearRect(0, 0, w, h);
+    // eye: many traces, clipped to the plot
+    const r = DT.rng(42);
+    const yl = (lv) => (lv ? y0 + 6 : y1 - 6);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, y0 - 2, x1 - x0, y1 - y0 + 4); ctx.clip();
+    ctx.lineWidth = 1; ctx.strokeStyle = board; ctx.globalAlpha = 0.2;
+    const ramp = Math.min(180, bit * 0.09);
+    for (let k = 0; k < 40; k++) {
+      const lv = Array.from({ length: 6 }, () => (r() < 0.5 ? 0 : 1));
+      const edge = Array.from({ length: 6 }, (_, i) => (cal.delay % bit) + (i - 1) * bit + (r() - 0.5) * ZONE * 0.9);
+      ctx.beginPath(); ctx.moveTo(X(edge[0] - bit), yl(lv[0]));
+      for (let i = 1; i < 6; i++) { ctx.lineTo(X(edge[i] - ramp), yl(lv[i - 1])); ctx.lineTo(X(edge[i] + ramp), yl(lv[i])); }
+      ctx.lineTo(X(span + bit), yl(lv[5]));
+      ctx.stroke();
+    }
+    ctx.restore(); ctx.globalAlpha = 1;
+    // uncertain zones
+    for (let e = -1; e <= 3; e++) {
+      const c = (cal.delay % bit) + e * bit;
+      const a = Math.max(0, c - ZONE / 2), b = Math.min(span, c + ZONE / 2);
+      if (b > a) { ctx.fillStyle = bad; ctx.globalAlpha = 0.12; ctx.fillRect(X(a), y0, X(b) - X(a), y1 - y0); ctx.globalAlpha = 1; }
+    }
+    // axis
+    ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(x0, y1 + 4); ctx.lineTo(x1, y1 + 4); ctx.stroke();
+    ctx.fillStyle = muted; ctx.textAlign = "center";
+    const stepNs = bit >= 8000 ? 4000 : bit >= 4000 ? 1000 : 500;
+    for (let t = 0; t <= span; t += stepNs) { ctx.textAlign = t === 0 ? "left" : t + stepNs > span ? "right" : "center"; ctx.fillText((t / 1000).toFixed(stepNs < 1000 ? 1 : 0) + " ns", X(t), y1 + 18); }
+    ctx.textAlign = "left"; ctx.fillText("SDO", 4, (y0 + y1) / 2 + 4);
+    // the sampling instant (and the same instant one bit later)
+    const s = sampleAt(+bp.value, +ph.value);
+    const ok = good(s);
+    for (const t of [s, s + bit]) {
+      if (t > span) continue;
+      ctx.strokeStyle = ok ? fp : bad; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(X(t), y0 - 8); ctx.lineTo(X(t), y1 + 4); ctx.stroke();
+    }
+    ctx.fillStyle = ok ? fp : bad; ctx.textAlign = "center";
+    ctx.fillText("sample", Math.min(x1 - 24, Math.max(x0 + 24, X(s))), y0 - 12);
+    ctx.textAlign = "left";
+    document.getElementById("bpOut").textContent = bp.value + " of " + N();
+    document.getElementById("phOut").textContent = ph.value + " (" + (ph.value * STEP_PS).toFixed(0) + " ps)";
+    // stats
+    const st = document.getElementById("calStats");
+    st.innerHTML = `<div class="stat"><b>${(s / 1000).toFixed(3)} ns</b><span>sampling instant within the bit</span></div>
+      <div class="stat"><b>${(edgeDist(s)).toFixed(0)} ps</b><span>distance to the nearest data edge</span></div>
+      <div class="stat"><b style="color:${ok ? "var(--good)" : "var(--bad)"}">${ok ? "error-free" : "errors"}</b><span>what LINK_TEST would report here</span></div>
+      ${cal.chosen ? `<div class="stat"><b>${cal.chosen.b} / ${cal.chosen.p}</b><span>calibration's choice (bit phase / step), ${cal.chosen.width.toFixed(0)} ps error-free</span></div>` : ""}`;
+    // sweep rows (one per bit phase)
+    const sw = document.getElementById("sweep");
+    if (!cal.sweep) { sw.innerHTML = `<div class="muted" style="font-size:.85rem">Press <b>Run calibration</b> to sweep every bit phase and phase step.</div>`; return; }
+    const rows = {};
+    cal.sweep.forEach((p) => (rows[p.b] = rows[p.b] || []).push(p));
+    sw.innerHTML = Object.keys(rows).map((b) => `<div class="sweep-row"><span>bit phase ${b}</span><div class="sweep-cells">${rows[b].map((p) => {
+      const isC = cal.chosen && cal.chosen.b === p.b && cal.chosen.p === p.p;
+      const c = p.g === null ? "transparent" : isC ? "var(--ink)" : p.g ? "var(--good)" : "var(--bad)";
+      return `<i style="background:${c};opacity:${isC ? 1 : 0.75}" title="bit phase ${p.b}, step ${p.p}: ${p.g === null ? "not yet" : p.g ? "good" : "errors"}"></i>`;
+    }).join("")}</div></div>`).join("") + `<div class="legend"><span><span class="sw" style="background:var(--good)"></span>error-free</span><span><span class="sw" style="background:var(--bad)"></span>errors</span><span><span class="sw" style="background:var(--ink)"></span>chosen: centre of the widest good run</span></div>`;
+  }
+  setMode();
+  DT.onResize(drawCal);
+  DT.onTheme(drawCal);
+
+  // ===========================================================================
+  // Frame decoder (bit-serial reference semantics)
+  // ===========================================================================
+  const REFB = 24, STOPB = 18, NB = REFB + STOPB;
+  function buildStream() {
+    const ref = Math.max(0, Math.min(16777215, parseInt(document.getElementById("dsRef").value || "0", 10)));
+    const stop = Math.max(0, Math.min(124999, parseInt(document.getElementById("dsStop").value || "0", 10)));
+    const msg = (r, s) => r.toString(2).padStart(REFB, "0") + s.toString(2).padStart(STOPB, "0");
+    const sdo = [], frame = [], role = [];
+    const idle = (n) => { for (let i = 0; i < n; i++) { sdo.push(0); frame.push(0); role.push("idle"); } };
+    const put = (bits) => { for (let i = 0; i < bits.length; i++) { sdo.push(+bits[i]); frame.push(i < 8 ? 1 : 0); role.push(i < REFB ? "ref" : "stop"); } };
+    idle(3);
+    const firstAt = sdo.length;
+    put(msg(ref, stop));
+    if (document.getElementById("dsGlitch").checked) frame[firstAt + 5] = 0;
+    if (document.getElementById("dsTwo").checked) { idle(1); put(msg((ref + 3) & 0xffffff, (stop * 7 + 12345) % 125000)); }
+    idle(4);
+    while (sdo.length % 4) idle(1);
+    return { sdo, frame, role };
+  }
+  function decode({ sdo, frame }) {
+    const out = [], marks = {};
+    let inFrame = false, pos = 0, bits = "", start = 0, prevF = 0;
+    for (let i = 0; i < sdo.length; i++) {
+      const f = frame[i], rise = f === 1 && prevF === 0;
+      if (!inFrame) {
+        if (rise) { inFrame = true; pos = 0; bits = ""; start = i; }
+      } else {
+        const want = pos < 8 ? 1 : 0;
+        if (f !== want) {
+          marks[i] = "err";
+          out.push({ kind: "error", at: i, msg: `structure error at bit ${i}: FRAME ${f} where ${want} was expected; frame from bit ${start} abandoned` });
+          inFrame = false;
+          if (rise) { inFrame = true; pos = 0; bits = ""; start = i; out.push({ kind: "resync", at: i, msg: `FRAME rises at bit ${i}: a new frame starts there` }); }
+        }
+      }
+      if (inFrame) {
+        bits += sdo[i]; pos++;
+        if (pos === NB) {
+          const r = parseInt(bits.slice(0, REFB), 2), s = parseInt(bits.slice(REFB), 2);
+          out.push({ kind: "event", at: i, msg: `event: bits ${start}–${i} → reference index ${DT.fmtInt(r)}, stop ${DT.fmtInt(s)} ps` });
+          inFrame = false;
+        }
+      }
+      prevF = f;
+    }
+    return { out, marks };
+  }
+  function drawDeser() {
+    const st = buildStream();
+    const { out, marks } = decode(st);
+    const row = (name, arr, kind) => {
+      let html = `<div class="lane"><span class="lane-name">${name}</span><div class="cells">`;
+      for (let w = 0; w < arr.length; w += 4) {
+        html += `<div class="cw">`;
+        for (let i = w; i < w + 4; i++) {
+          let cls = "cell" + (arr[i] ? " hi" : "");
+          if (kind === "frame") { if (marks[i] === "err") cls += " f-err"; else if (arr[i]) cls += " f-frame1"; }
+          else if (st.role[i] === "ref") cls += " f-ref"; else if (st.role[i] === "stop") cls += " f-stop";
+          html += `<span class="${cls}" title="bit ${i}">${arr[i]}</span>`;
+        }
+        html += `</div>`;
+      }
+      return html + `</div></div>`;
+    };
+    const idx = st.sdo.map((_, i) => (i % 4 === 0 ? i : ""));
+    document.getElementById("lanes").innerHTML =
+      `<div class="lane"><span class="lane-name">bit</span><div class="cells">${Array.from({ length: st.sdo.length / 4 }, (_, w) => `<div class="cw">${[0, 1, 2, 3].map((k) => `<span class="cell" style="background:transparent;font-size:.6rem">${k === 0 ? w * 4 : ""}</span>`).join("")}</div>`).join("")}</div></div>` +
+      row("FRAME", st.frame, "frame") + row("SDO", st.sdo, "sdo");
+    document.getElementById("dsOut").innerHTML = out.map((o) => `<div style="color:${o.kind === "event" ? "var(--fpga)" : o.kind === "error" ? "var(--bad)" : "var(--warn)"}">${o.kind === "event" ? "✓" : o.kind === "error" ? "✕" : "↻"} ${o.msg}</div>`).join("") || `<div class="muted">no frame found</div>`;
+  }
+  ["dsRef", "dsStop", "dsGlitch", "dsTwo"].forEach((id) => document.getElementById(id).addEventListener("input", drawDeser));
+  drawDeser();
+
+  // ===========================================================================
+  // Event queue simulation (one step = one 8 ns lclk_rx cycle)
+  // ===========================================================================
+  const CAP = 16384, HOLD = 8, TIMEMASK = (1 << 14) - 1, CYC = 8e-9, MSG = 10.5;   // one 42-bit GPX2 message = 84 ns = 10.5 cycles
+  const rates = [11.9e6, 11.9e6, 6e6, 2.73e6];
+  const SPEEDS = [[5e-6, "5 µs"], [20e-6, "20 µs"], [100e-6, "100 µs"], [500e-6, "0.5 ms"], [2e-3, "2 ms"]];
+  const laneCtls = document.getElementById("laneCtls");
+  rates.forEach((r, c) => {
+    const d = document.createElement("div");
+    d.className = "lane-ctl";
+    d.innerHTML = `<span class="ch${c + 1}" style="font-family:var(--f-mono);font-size:.8rem">ch ${c + 1}</span>
+      <input type="range" min="0" max="11.9" step="0.1" value="${(r / 1e6).toFixed(1)}" id="qr${c}" aria-label="channel ${c + 1} rate">
+      <output class="readout" id="qro${c}">${(r / 1e6).toFixed(1)} M/s</output><span class="hold ch${c + 1}" id="qh${c}" title="holding register"></span>`;
+    laneCtls.appendChild(d);
+    d.querySelector("input").addEventListener("input", (e) => { rates[c] = +e.target.value * 1e6; document.getElementById("qro" + c).textContent = (+e.target.value).toFixed(1) + " M/s"; });
+  });
+  let q;
+  function qReset() {
+    q = { cyc: 0, fifo: new Int8Array(CAP), head: 0, len: 0, hv: [0, 0, 0, 0], hage: [0, 0, 0, 0], drop: 0, dropSince: 0, captured: 0, ovf: 0, tm: 0, timePending: false, credit: 0, pauseUntil: 0, max: 0, hist: [], ticker: [], started: false, next: [Infinity, Infinity, Infinity, Infinity] };
+  }
+  qReset();
+  let qRunning = true;
+  const rnd = DT.rng(99);
+  function qStep(cycles) {
+    const [linkRate, fmt] = document.getElementById("qLink").value.split(",").map(Number);
+    const p = rates.map((r) => r * CYC);
+    const drainPerCyc = linkRate * CYC;
+    for (let n = 0; n < cycles; n++) {
+      q.cyc++;
+      if ((q.cyc & TIMEMASK) === TIMEMASK) q.timePending = true;
+      // arrivals (a lane whose register is still full drops the new event)
+      const arrive = [0, 0, 0, 0];
+      for (let c = 0; c < 4; c++) {
+        if (p[c] <= 0) { q.next[c] = Infinity; continue; }
+        if (!isFinite(q.next[c])) q.next[c] = q.cyc + MSG + Math.max(0, -Math.log(1 - rnd()) * (1 / p[c] - MSG));
+        if (q.cyc >= q.next[c]) { arrive[c] = 1; q.next[c] += MSG + Math.max(0, -Math.log(1 - rnd()) * (1 / p[c] - MSG)); }
+      }
+      // arbiter: one write per cycle while not full
+      let wrote = -2;
+      if (q.len < CAP) {
+        let v = 0;
+        if (!q.started) { v = -1; q.started = true; }
+        else if (q.dropSince > 0) { v = -3; q.ovf++; q.dropSince = 0; }
+        else if (q.timePending) { v = -2; q.tm++; q.timePending = false; }
+        else { for (let c = 0; c < 4; c++) if (q.hv[c]) { v = c + 1; q.hv[c] = 0; q.captured++; wrote = c; break; } }
+        if (v !== 0) {
+          q.fifo[(q.head + q.len) % CAP] = v; q.len++;
+          if (wrote === -2) wrote = -1;
+          q.ticker.push(v); if (q.ticker.length > 48) q.ticker.shift();
+        }
+      }
+      for (let c = 0; c < 4; c++) {
+        if (q.hv[c] && c !== wrote) {
+          q.hage[c]++;
+          if (q.hage[c] >= HOLD) { q.hv[c] = 0; q.drop++; q.dropSince++; }
+        }
+        if (arrive[c]) {
+          if (q.hv[c]) { q.drop++; q.dropSince++; }
+          else { q.hv[c] = 1; q.hage[c] = 0; }
+        }
+      }
+      // drain
+      if (q.cyc >= q.pauseUntil) {
+        q.credit += drainPerCyc;
+        while (q.credit >= 1 && q.len) {
+          const r = q.fifo[q.head];
+          const cost = fmt === 2 ? (r > 0 ? 1 + (rnd() < 0.0005 ? 1 : 0) : 3) : 1;
+          if (q.credit < cost) break;
+          q.credit -= cost; q.head = (q.head + 1) % CAP; q.len--;
+        }
+        if (!q.len) q.credit = Math.min(q.credit, 1);
+      }
+      if (q.len > q.max) q.max = q.len;
+    }
+  }
+  const qSpeed = document.getElementById("qSpeed");
+  function qSpeedLabel() { document.getElementById("qSpeedOut").textContent = SPEEDS[+qSpeed.value][1] + " per second of animation"; }
+  qSpeed.addEventListener("input", qSpeedLabel); qSpeedLabel();
+  document.getElementById("qPause").addEventListener("click", () => { q.pauseUntil = q.cyc + Math.round(2e-3 / CYC); });
+  document.getElementById("qRun").addEventListener("click", (e) => { qRunning = !qRunning; e.target.textContent = qRunning ? "Pause simulation" : "Resume simulation"; if (qRunning) loop(); });
+  document.getElementById("qReset").addEventListener("click", () => { qReset(); qDraw(); });
+  let lastT = 0;
+  function loop(t) {
+    if (!qRunning) return;
+    if (t && lastT) {
+      const dt = Math.min(0.05, (t - lastT) / 1000);
+      const cycles = Math.max(1, Math.round((SPEEDS[+qSpeed.value][0] * dt) / CYC));
+      qStep(Math.min(cycles, 400000));
+      q.hist.push(q.len);
+      if (q.hist.length > 400) q.hist.shift();
+      qDraw();
+    }
+    lastT = t || 0;
+    requestAnimationFrame(loop);
+  }
+  function qDraw() {
+    const frac = q.len / CAP;
+    document.getElementById("qFill").style.width = (frac * 100).toFixed(1) + "%";
+    document.getElementById("qFill").style.background = frac > 0.95 ? "var(--bad)" : frac > 0.5 ? "var(--warn)" : "var(--fpga)";
+    document.getElementById("qFillLbl").textContent = `${DT.fmtInt(q.len)} records${q.cyc < q.pauseUntil ? " · PC paused" : ""}`;
+    for (let c = 0; c < 4; c++) document.getElementById("qh" + c).classList.toggle("on", !!q.hv[c]);
+    const simT = q.cyc * CYC;
+    const total = q.captured + q.drop;
+    document.getElementById("qStats").innerHTML = `
+      <div class="stat"><b>${DT.fmtTime(simT * 1e12)}</b><span>simulated</span></div>
+      <div class="stat"><b>${DT.fmtInt(q.captured)}</b><span>events captured</span></div>
+      <div class="stat"><b style="color:${q.drop ? "var(--bad)" : "inherit"}">${DT.fmtInt(q.drop)}</b><span>dropped${total ? ` (${((100 * q.drop) / total).toFixed(1)} %)` : ""}</span></div>
+      <div class="stat"><b>${DT.fmtInt(q.ovf)}</b><span>OVERFLOW markers</span></div>
+      <div class="stat"><b>${DT.fmtInt(q.tm)}</b><span>TIME markers</span></div>
+      <div class="stat"><b>${DT.fmtInt(q.max)}</b><span>highest fill (field 101)</span></div>`;
+    document.getElementById("qTicker").innerHTML = q.ticker.map((r) => r > 0 ? `<span style="background:var(--ch${r})">${r}</span>` : `<span style="background:${r === -3 ? "var(--bad)" : "var(--muted)"}">${r === -1 ? "S" : r === -2 ? "T" : "O"}</span>`).join("");
+    const cv = document.getElementById("qChart");
+    const { ctx, w, h } = DT.canvas(cv, 110);
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = DT.color("--grid");
+    for (const f of [0.25, 0.5, 0.75]) { ctx.beginPath(); ctx.moveTo(0, h - f * (h - 8)); ctx.lineTo(w, h - f * (h - 8)); ctx.stroke(); }
+    if (q.hist.length > 1) {
+      ctx.beginPath();
+      q.hist.forEach((v, i) => { const x = (i / 399) * w, y = h - (v / CAP) * (h - 8); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineTo(((q.hist.length - 1) / 399) * w, h); ctx.lineTo(0, h); ctx.closePath();
+      ctx.fillStyle = DT.color("--fpga"); ctx.globalAlpha = 0.18; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.beginPath();
+      q.hist.forEach((v, i) => { const x = (i / 399) * w, y = h - (v / CAP) * (h - 8); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.strokeStyle = DT.color("--fpga"); ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.fillStyle = DT.color("--muted"); ctx.fillText("full", 4, 14); ctx.fillText("fill over the last 400 frames of animation", 40, 14);
+  }
+  qDraw();
+  requestAnimationFrame(loop);
+
+  // ===========================================================================
+  // Resources
+  // ===========================================================================
+  const RES = [
+    ["Slice LUTs", 6638, 20800], ["Flip-flops", 13371, 41600], ["Slices (packing)", 5250, 8150],
+    ["Block RAM (36 Kb tiles)", 36, 50, [[32, "--host"], [4, "--link"]]], ["DSP slices", 0, 90], ["Bonded I/O pins", 89, 170],
+  ];
+  document.getElementById("res").innerHTML = RES.map(([name, used, total, parts]) => {
+    const segs = parts ? parts.map(([n, c]) => `<i style="width:${(n / total) * 100}%;background:var(${c})" title="${n} tiles"></i>`).join("") : `<i style="width:${(used / total) * 100}%;background:var(--fpga)"></i>`;
+    return `<div class="res-row"><span>${name}</span><div class="res-track">${segs}</div><span class="res-num">${DT.fmtInt(used)} / ${DT.fmtInt(total)} · ${((100 * used) / total).toFixed(0)} %</span></div>`;
+  }).join("");
+})();
+</script>
+</body>
+</html>

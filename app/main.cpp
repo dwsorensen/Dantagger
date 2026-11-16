@@ -814,6 +814,77 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
                  "projection keeps the total");
         return true;
     });
+    step("2D zoom: drag a rectangle round the peak, then Back", [=, &a, &t] {
+        auto& h = panel(4);
+        static double sel[4];   // x0, x1, y0, y1 (ps)
+        static std::int64_t shift[2];
+        static ImVec2 from, to;
+        const auto& d = a.dev.channels().delay_ps;
+        if (t.frames == 1) {
+            t.expect(h.running(), "2D panel running before the zoom");
+            t.expect(d[0] == 0 && d[1] == 0, "no input delays on ch 1, 2 before the zoom");
+            sel[0] = 31000;
+            sel[1] = 32100;
+            sel[2] = 31200;
+            sel[3] = 32300;
+        }
+        if (t.frames == 4) {   // ps -> pixels in the map (auto-fit: the axes are 0 .. bins × width)
+            const auto r = ui::g_probes["h2plot_" + std::to_string(h.id())];
+            const double rx = metric(h, "bw_x_ps") * metric(h, "n_x"), ry = metric(h, "bw_y_ps") * metric(h, "n_y");
+            auto px = [&](double x, double y) {
+                return ImVec2(r.first.x + static_cast<float>(x / rx) * (r.second.x - r.first.x),
+                              r.second.y - static_cast<float>(y / ry) * (r.second.y - r.first.y));
+            };
+            from = px(sel[0], sel[2]);
+            to = px(sel[1], sel[3]);
+            ImGui::GetIO().AddMousePosEvent(from.x, from.y);
+        }
+        if (t.frames == 6) ImGui::GetIO().AddMouseButtonEvent(0, true);
+        if (t.frames == 8) ImGui::GetIO().AddMousePosEvent((from.x + to.x) / 2, (from.y + to.y) / 2);
+        if (t.frames == 10) ImGui::GetIO().AddMousePosEvent(to.x, to.y);
+        if (t.frames == 11) t.shot("11b_hist2d_zoom_drag.png");
+        if (t.frames == 13) ImGui::GetIO().AddMouseButtonEvent(0, false);
+        if (t.frames == 15) {
+            ImGui::GetIO().AddMousePosEvent(-1, -1);
+            t.expect(metric(h, "zoom_depth") == 1, "one zoom step");
+            shift[0] = -d[0];
+            shift[1] = -d[1];
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "delays ch1 %lld ps, ch2 %lld ps (want about -31000, -31200)",
+                          static_cast<long long>(d[0]), static_cast<long long>(d[1]));
+            t.expect(std::fabs(static_cast<double>(shift[0]) - sel[0]) < 300 && std::fabs(static_cast<double>(shift[1]) - sel[2]) < 300, buf);
+        }
+        if (t.frames < 16) return false;
+        if (t.frames < 1000 && (metric(h, "zoom_pending") > 0 || !h.running() || metric(h, "bw_x_ps") >= 100 || metric(h, "total") < 300))
+            return false;
+        if (t.frames < 1000) {
+            char buf[200];
+            std::snprintf(buf, sizeof buf, "zoomed: %d bins of %.0f × %.0f ps (want about 2.75); peak at (%.0f, %.0f) + shift = (%.0f, %.0f) ps",
+                          static_cast<int>(metric(h, "n_x")), metric(h, "bw_x_ps"), metric(h, "bw_y_ps"), metric(h, "peak_x_ps"),
+                          metric(h, "peak_y_ps"), metric(h, "peak_x_ps") + static_cast<double>(shift[0]),
+                          metric(h, "peak_y_ps") + static_cast<double>(shift[1]));
+            t.expect(metric(h, "n_x") == 400 && metric(h, "n_y") == 400, "bin counts unchanged");
+            t.expect(metric(h, "bw_x_ps") >= 2 && metric(h, "bw_x_ps") <= 4 && metric(h, "bw_y_ps") >= 2 && metric(h, "bw_y_ps") <= 4, buf);
+            t.expect(std::fabs(metric(h, "peak_x_ps") + static_cast<double>(shift[0]) - 31550) < 120 &&
+                         std::fabs(metric(h, "peak_y_ps") + static_cast<double>(shift[1]) - 31750) < 120,
+                     buf);
+            t.shot("11c_hist2d_zoomed.png");
+            t.frames = 1000;
+            return false;
+        }
+        if (t.frames == 1003) {   // Back
+            const auto r = ui::g_probes["h2back_" + std::to_string(h.id())];
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddMousePosEvent((r.first.x + r.second.x) / 2, (r.first.y + r.second.y) / 2);
+            io.AddMouseButtonEvent(0, true);
+            io.AddMouseButtonEvent(0, false);
+        }
+        if (t.frames == 1006) ImGui::GetIO().AddMousePosEvent(-1, -1);
+        if (t.frames < 1008 || metric(h, "zoom_pending") > 0 || !h.running() || metric(h, "bw_x_ps") != 100) return false;
+        t.expect(d[0] == 0 && d[1] == 0, "Back restored the delays");
+        t.expect(metric(h, "zoom_depth") == 0, "no zoom steps left");
+        return true;
+    });
     step("grid layout", [=, &a, &t] {
         if (t.frames == 1) a.pending = Layout::grid;
         if (t.frames == 10) t.shot("12_grid.png");

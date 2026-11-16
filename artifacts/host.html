@@ -1,0 +1,880 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inside the Host · Dantagger</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  /* layers */
+  .stack { display: grid; gap: 6px; }
+  .layer { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 0.8rem; align-items: stretch; }
+  @media (max-width: 640px) { .layer { grid-template-columns: 1fr; gap: 0.3rem; } }
+  .layer-name { font-family: var(--f-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-top: 0.55rem; }
+  .layer-items { display: flex; flex-wrap: wrap; gap: 6px; }
+  .li-btn {
+    font: inherit; cursor: pointer; text-align: left; flex: 1 1 150px; min-width: 0;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 0.45rem 0.65rem; display: grid; gap: 0.05rem;
+  }
+  .li-btn b { font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+  .li-btn small { color: var(--muted); font-size: 0.8rem; line-height: 1.3; }
+  .li-btn:hover { background: var(--sunk); }
+  .li-btn[aria-pressed="true"] { border-color: var(--host); box-shadow: inset 0 0 0 1px var(--host); background: var(--host-soft); }
+  .li-btn.ext { border-style: dashed; }
+  .layer-detail { border-top: 3px solid var(--host); padding-top: 0.8rem; display: grid; gap: 0.6rem; max-width: 84ch; }
+  .layer-detail .meta { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+
+  /* pipeline */
+  .pipe { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; align-items: stretch; }
+  @media (max-width: 900px) { .pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .pnode { border: 1px solid var(--rule); border-radius: 5px; padding: 0.55rem; display: grid; gap: 0.35rem; align-content: start; background: var(--bg); }
+  .pnode.thread { border-top: 3px solid var(--host); }
+  .pnode.queue { border-top: 3px solid var(--muted); }
+  .pnode.fpga { border-top: 3px solid var(--fpga); }
+  .pnode.usb { border-top: 3px solid var(--link); }
+  .pnode h5 { margin: 0; font-family: var(--f-display); font-size: 0.98rem; font-weight: 600; }
+  .pnode .sub { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+  .lvl-bar { height: 70px; background: var(--sunk); border-radius: 3px; position: relative; overflow: hidden; }
+  .lvl-bar i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--muted); }
+  .util { height: 8px; background: var(--sunk); border-radius: 2px; overflow: hidden; }
+  .util i { display: block; height: 100%; background: var(--host); }
+  .pnum { font-family: var(--f-mono); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+
+  /* wrap clock */
+  .wrapviz { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 1.4rem; align-items: start; }
+  @media (max-width: 760px) { .wrapviz { grid-template-columns: 1fr; } }
+  .calc { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 1rem; font-size: 0.9rem; }
+  .calc dt { color: var(--muted); }
+  .calc dd { margin: 0; font-family: var(--f-mono); font-size: 0.85rem; text-align: right; font-variant-numeric: tabular-nums; }
+  .calc .sum { border-top: 1px solid var(--rule); padding-top: 0.25rem; }
+
+  /* lab */
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--rule); }
+  .tabs button {
+    font: inherit; font-family: var(--f-display); font-weight: 600; font-size: 0.98rem; cursor: pointer; background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-bottom: 0; border-radius: 5px 5px 0 0; padding: 0.35rem 0.8rem; margin-bottom: -1px;
+  }
+  .tabs button[aria-selected="true"] { color: var(--ink); background: var(--panel); border-color: var(--rule); border-bottom: 1px solid var(--panel); }
+  .lab { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); gap: 1.2rem; }
+  @media (max-width: 820px) { .lab { grid-template-columns: 1fr; } }
+  .lab-side { display: grid; gap: 0.7rem; align-content: start; }
+  .lab-side .control input, .lab-side .control select { width: 100%; }
+  pre.code { margin: 0; background: var(--sunk); border-radius: 5px; padding: 0.7rem 0.8rem; font-family: var(--f-mono); font-size: 0.78rem; line-height: 1.5; overflow-x: auto; white-space: pre; }
+  .ttable { font-family: var(--f-mono); font-size: 0.8rem; }
+  .ttable td { padding: 0.2rem 0.6rem; }
+  .sem { display: grid; gap: 0.5rem; max-width: 80ch; }
+
+  /* windows timeline */
+  .tl svg { width: 100%; height: auto; display: block; }
+
+  .flow { display: grid; gap: 0.4rem; counter-reset: fl; padding: 0; margin: 0; }
+  .flow li { list-style: none; display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.6rem; align-items: start; margin: 0; }
+  .flow li::before { counter-increment: fl; content: counter(fl); font-family: var(--f-display); font-weight: 700; color: var(--host); font-size: 1.2rem; text-align: right; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18h6l2-12 2 12h10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 21v-3M14 21v-3M18 21v-3M6 21v-3" stroke="currentColor" stroke-width="1.2"/></svg>
+      Dantagger
+    </a>
+    <nav class="nav" aria-label="Pages">
+      <a href="index.html"><span class="lvl">01</span>End to end</a>
+      <a href="fpga.html"><span class="lvl">02</span>Inside the FPGA</a>
+      <a href="host.html" aria-current="page"><span class="lvl">03</span>Inside the host</a>
+      <a href="formats.html"><span class="lvl">04</span>Bits on the wire</a>
+    </nav>
+    <div class="depth"><span>Detail</span>
+      <div class="seg" role="group" aria-label="Level of detail">
+        <button data-level="1" aria-pressed="true">Intuition</button><button data-level="2" aria-pressed="false">Mechanism</button><button data-level="3" aria-pressed="false">Exact</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="eyebrow c-host">Dantagger · C++ core · Python library · app</div>
+    <h1>Inside the host</h1>
+    <p class="lede">The PC receives raw records and has to answer one question for each: <b>when, exactly, did this happen?</b> Once every tag has a time on one shared timeline, measurements are just bookkeeping: counts, differences, and bins.</p>
+    <p class="muted" data-depth="2" style="max-width:72ch">All of it is one C++ core. The app links it directly; Python reaches it through pybind11 with the Swabian Time Tagger API on top. The board's own library (<code>tdcctl</code>, copied from TDC_Firmware) handles USB, frames and commands underneath.</p>
+  </div>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Layers</div>
+      <h2>What sits on what</h2>
+      <p class="muted" style="max-width:72ch">From the faces you use down to the driver. Click a part.</p>
+    </div>
+    <div class="bench">
+      <div class="stack" id="stack"></div>
+      <div class="layer-detail" id="layerDetail" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Threads and queues</div>
+      <h2>Three threads, so the USB is never left waiting</h2>
+      <p class="muted" style="max-width:72ch">Each stage runs on its own thread with a big queue in front of it. A slow stage fills its queue first. Only when every queue downstream is full does the slowdown reach the FPGA, and only then are events lost. Push the input rate, make the PC busy, or add a heavy measurement, and watch where the water rises.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Tags per second into the FPGA <output id="pRateOut"></output><input type="range" id="pRate" min="0" max="47.6" step="0.1" value="23.35"></label>
+        <label class="control">Record format
+          <select id="pFmt"><option value="56">compact (≈ 56 M/s link, estimate)</option><option value="28">64-bit (28 M/s link, measured)</option></select>
+        </label>
+        <label class="control"><span><input type="checkbox" id="pBusy"> PC busy (each thread gets half a core)</span></label>
+        <label class="control"><span><input type="checkbox" id="pHeavy"> heavy measurement (engine at 15 M tags/s)</span></label>
+        <button class="btn" id="pReset">Empty the queues</button>
+      </div>
+      <div class="pipe" id="pipe"></div>
+      <div class="stat-row" id="pStats"></div>
+      <div class="note" data-depth="2">Thread speeds come from the board run of 2026-10-22: at 23.35 M tags/s, <b>dt-receive</b> used 56 % of a core, <b>dt-decode</b> 49 % and <b>dt-engine</b> 61 %. That gives ceilings of about 42, 48 and 38 M tags/s. The engine is the next limit. Before the split, the single-thread design dropped events at 12.6 M/s.</div>
+      <div class="note" data-depth="3">Queue sizes: FPGA FIFO 16 384 records; D3XX 64 transfers in flight plus a 4096-buffer library queue of 4 KiB (≈ 16 MB, <code>TdcOptions::usb_urb_count/usb_queue_buffers</code>); <code>RecordQueue</code> 256 MB of 8-byte records (<code>kRecordQueueBytes</code>); the engine queue's budget 256 MB (<code>kQueueBudgetBytes</code>; <code>Engine::push</code> blocks above it). The decoder pushes a chunk every 32 768 events or 1 ms of coarse time. Thread names show in <code>top -H</code>: dt-receive, dt-decode, dt-engine, dt-recorder, dt-worker.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Decoding</div>
+      <h2>Which lap is it on?</h2>
+      <p class="muted" style="max-width:72ch">An event's GPX2 time is <b>reference index × 125 000 + stop result</b>, in ps. The index has only 24 bits, so this time starts over every 2.1 s, like a stopwatch that only shows seconds. To know which lap an event is on, the decoder predicts its time from the previous event and the FPGA's coarse clock, then chooses the lap that lands closest. That only works if the prediction is good to well under half a lap.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Reference index width
+          <select id="wBits"><option value="24" selected>24 bits (default: 2.1 s per lap)</option><option value="16">16 bits (8.2 ms)</option><option value="12">12 bits (512 µs)</option><option value="6">6 bits (8 µs, release-2 short frame)</option></select>
+        </label>
+        <label class="control">Silence since the previous event <output id="wGapOut"></output><input type="range" id="wGap" min="-7" max="4" step="0.05" value="-3"></label>
+        <label class="control">Clock ratio
+          <select id="wRatio"><option value="unmeasured">not measured yet (±200 ppm)</option><option value="measured" selected>measured over 10 s of this session</option></select>
+        </label>
+        <label class="control">Records
+          <select id="wFmt"><option value="compact">compact (coarse time of the last marker)</option><option value="64">64-bit (own coarse time)</option></select>
+        </label>
+      </div>
+      <div class="wrapviz">
+        <div class="canvas-box"><canvas id="wrapCv" aria-label="One lap of the reference index as a clock face"></canvas></div>
+        <div style="display:grid;gap:.8rem">
+          <dl class="calc" id="wCalc"></dl>
+          <div id="wVerdict"></div>
+          <p class="note" data-depth="2">If the uncertainty is too big, the decoder does not guess. It <b>re-anchors</b>: it places the event at its coarse time, which is good to about a microsecond, and starts a new clock-ratio measurement from there. With the 24-bit default this needs a silence of over an hour. With release 2's 6-bit frame it happened after seconds, which is why 24 + 18 bits became the default.</p>
+        </div>
+      </div>
+      <div class="note" data-depth="3"><code>RecordDecoder::feed</code> (<code>core/record_decoder.cpp</code>): <code>predicted = last_tgpx + dc × coarse_ps × ratio</code>, <code>k = round((predicted − t_cand) / wrap)</code>, <code>uncertainty = spread + |dc × coarse_ps| × ratio_unc</code>, re-anchor if <code>uncertainty &gt; 0.45 × wrap</code>. The spread is the worst readout latency difference: (16 + 1) frames × 42 bits × 2 ns + 0.5 µs = 1.93 µs (<code>tdcctl::max_result_latency_us</code>). Compact records add (2¹⁴ + 16) × 8 ns = 131.2 µs, because an event only carries the last marker's coarse time. The ratio (GPX2 ps per coarse ps) is measured from the run's first event every 1024 events once the span exceeds 50 ms, with uncertainty 3 × spread / span + 10⁻⁹. On an anchor, <code>K = coarse × 8000 + coarse_uncertainty − 600 ns − t_gpx</code>, kept at or after the run start, the watermark and the previous event. A fast path takes ratio = 1 while that is provably safe.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Ordering</div>
+      <h2>The watermark and the merge</h2>
+      <p class="muted" style="max-width:72ch">Each channel's times arrive in order, but the channels arrive late by different amounts, because each has its own readout queue in the TDC chip. The decoder keeps a <b>watermark</b>: a time no future event can come before. Everything earlier than the watermark is final, so it can be merged into one ordered stream and measured. Step through time, or move a channel's input delay.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <button class="btn primary" id="mStep">Advance 1 µs</button>
+        <button class="btn" id="mPlay">Play</button>
+        <button class="btn" id="mReset">Start over</button>
+        <button class="btn" id="mNew">New events</button>
+        <label class="control">Input delay, channel 2 <output id="mD2Out"></output><input type="range" id="mD2" min="-3000" max="3000" step="100" value="0"></label>
+        <label class="control">Dead time, all channels <output id="mDeadOut"></output><input type="range" id="mDead" min="0" max="1500" step="50" value="0"></label>
+      </div>
+      <div class="canvas-box"><canvas id="mergeCv" aria-label="Four channel lanes, the watermark, and the merged stream"></canvas></div>
+      <div class="legend"><span>● received</span><span>○ still in flight (in the chip's queue, on USB)</span><span>× removed by dead time</span><span><span class="sw" style="background:var(--host);opacity:.25"></span>final: before the watermark + smallest delay</span></div>
+      <div class="note" data-depth="2">Delays are applied in software and exactly, in the Swabian <code>setInputDelay</code> convention: every tag of the channel moves by the delay. Since every future tag of a channel is at or after <i>watermark + its delay</i>, the merge can only release tags below <i>watermark + the smallest delay</i>. Dead time is non-extending: an event closer than the dead time to the last <i>accepted</i> event of its channel is dropped. Ties are ordered by channel number, as in the Swabian library.</div>
+      <div class="note" data-depth="3"><code>Merger::push</code> (<code>core/merger.cpp</code>). The real watermark is the latest coarse time minus 20 µs (<code>kMarginPs</code>), plus 131 µs for compact runs, minus the clock-ratio error since the last event. A tag a negative delay moves before the run start is dropped. Between runs the timeline is shifted forward if needed so it never goes back. On the run's last chunk everything is flushed.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Windows</div>
+      <h2>A measurement sees only its window, in captured time</h2>
+      <p class="muted" style="max-width:72ch">The engine hands every merged block to each running measurement, cut to that measurement's window. <code>startFor(d)</code> means <b>d of captured time</b>. If the FPGA run stops in the middle, for example to apply a new trigger level, the window's end moves out by the gap, so the measurement still gets its full duration.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control"><span><input type="checkbox" id="tGap" checked> change a trigger level during the window</span></label>
+        <label class="control">When <output id="tAtOut"></output><input type="range" id="tAt" min="15" max="70" value="40"></label>
+        <label class="control">Gap length <output id="tLenOut"></output><input type="range" id="tLen" min="2" max="20" value="9"></label>
+      </div>
+      <div class="tl" id="tl"></div>
+      <div class="note" data-depth="2"><code>start()</code> and <code>startFor()</code> take effect at the start of the next block the engine processes, or at the start of the next FPGA run if the board is idle. Measurements in one <code>SynchronizedMeasurements</code> group change together under one lock, so they share their window edges exactly. A block is also split around OVERFLOW markers, and each measurement is told about them (<code>on_special</code>). A new run is a discontinuity: pairing state such as a waiting START is forgotten (<code>on_gap</code>).</div>
+      <div class="note" data-depth="3"><code>Engine::dispatch</code> (<code>core/engine.cpp</code>): <code>if (window_seen &amp;&amp; block.begin &gt; last_time &amp;&amp; stop_time != never) stop_time += block.begin − last_time</code>. This was added after SDE's tomography flow test failed about half the time: a window begun while the previous run was ending lost the gap, so a Counter bin of the window's length never completed.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="lab">
+    <div class="chapter-head">
+      <div class="eyebrow">The measurements</div>
+      <h2>Every measurement class, running live</h2>
+      <p class="muted" style="max-width:72ch">A simulated stream like the app's <code>--simulate</code> board: a <span class="ch4">1 MHz laser on channel 4</span>; detectors on <span class="ch1">channel 1</span> and <span class="ch2">channel 2</span> that click on 10 % and 8 % of its pulses 31.55 ns and 31.75 ns later (25 and 35 ps jitter, 300 dark counts/s); and <span class="ch3">50 kHz of random clicks on channel 3</span>. The algorithms below are JavaScript ports of the C++ loops, with the same rules.</p>
+    </div>
+    <div class="bench">
+      <div class="tabs" role="tablist" id="labTabs"></div>
+      <div class="lab">
+        <div class="lab-side">
+          <div id="labParams" style="display:grid;gap:.6rem"></div>
+          <label class="control">Run for (tag time) <select id="labDur"><option value="20">20 ms</option><option value="100" selected>100 ms</option><option value="400">400 ms</option></select></label>
+          <label class="control" data-depth="2"><span><input type="checkbox" id="labComb"> GPX2 quantisation (44.12 ps internal step)</span></label>
+          <div class="controls"><button class="btn primary" id="labStart">Start</button><button class="btn" id="labStop">Stop</button></div>
+          <div class="readout" id="labProgress"></div>
+        </div>
+        <div style="display:grid;gap:.8rem;min-width:0">
+          <div class="canvas-box" id="labPlotBox"><canvas id="labCv"></canvas></div>
+          <div class="stat-row" id="labStats"></div>
+        </div>
+      </div>
+      <div class="sem" id="labSem"></div>
+      <div data-depth="2"><div class="muted" style="font-size:.85rem;margin-bottom:.3rem">The same measurement in Python (the SDE scripts' API):</div><pre class="code" id="labCode"></pre></div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter">
+    <div class="chapter-head">
+      <div class="eyebrow">Opening and settings</div>
+      <h2>What happens when you connect, and when you change a setting</h2>
+    </div>
+    <div class="grid cols-2">
+      <div class="prose">
+        <h4>Connecting</h4>
+        <ol class="flow">
+          <li><span>Open the FT601. Refuse it unless it is in 245 mode, one channel, 66.67 MHz. If the app or a script already holds it, say so clearly.</span></li>
+          <li><span>STOP and STATUS. The response tells the release (1, 2 or 3), the GPX2 state and the LVDS settings.</span></li>
+          <li><span><b>Change nothing.</b> Trigger levels and hysteresis are read back from the board, never reset.</span></li>
+          <li data-depth="2"><span>Python only, if the board is not set up (after a power cycle): configure the GPX2 with the frame policy and calibrate the link. "Set up" means the FPGA's LVDS state equals the state file recorded after the last calibration. The app instead offers a <b>Set up the board</b> button that does the same.</span></li>
+          <li data-depth="3"><span>Frame policy: releases 2 and 3 use 24 + 18 bits in DDR, unless the last successful calibration was SDR; release 1 uses 24 + 20 in SDR. One state file per receive path: <code>&lt;serial&gt;.json</code> for release 1 and <code>&lt;serial&gt;.release2.json</code> for releases 2 and 3, so a fallback rate chosen once survives power cycles.</span></li>
+        </ol>
+      </div>
+      <div class="prose">
+        <h4>Changing a setting while measuring</h4>
+        <p>The FPGA takes no comparator commands while it streams. So a trigger, hysteresis or LED change means: stop the run, apply the change, start a new run. The measurements keep their data, and their capture time leaves out the gap.</p>
+        <p><b>The app</b> does this quietly for any setting (<code>SettingsPolicy::restart</code>). Trigger levels, hysteresis, input delays and dead times are shared by all panels and saved for the next session.</p>
+        <p><b>Python</b> is strict, like the Swabian library. While a measurement you started is running, a setting change raises <code>SettingsBusyError</code>. A measurement that is only running because of Swabian autostart does not block it: the run restarts with a warning.</p>
+        <p data-depth="2"><b>Saving tags.</b> Only the app writes tags to disk, and only when asked. A <code>StreamRecorder</code> taps the raw records on the decode thread, and its own writer thread writes them, so a slow disk never stalls USB. Files are raw FPGA records plus a JSON sidecar. <code>FileBackend</code> replays them through the same decoder. Python never saves tags.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="next-page">
+    <a href="fpga.html">← Inside the FPGA<small>Clock domains, calibration, the queue</small></a>
+    <a href="formats.html">Bits on the wire →<small>Records, words, frames, commands</small></a>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+(function () {
+  // ===========================================================================
+  // Layers
+  // ===========================================================================
+  const LAYERS = [
+    ["You use", [
+      ["app", "Dantagger app", "panels, docking, recording", "<p>Every measurement type as a panel. Any number run at once, on the live stream or on saved tag files. Panels can be tabs, side by side, or separate OS windows. It also has the setup pages: comparator, GPX2 and LVDS, countrate versus trigger, and LEDs.</p>", "<p>A <code>Device</code> worker thread owns the <code>Tagger</code>; panels create the library's own measurement objects and copy their data ten times a second for drawing. Trigger levels, hysteresis, delays and dead times are shared and persistent (<code>~/.config/dantagger/channels.ini</code>). The rate bar comes from a tap on the decode thread, so it shows whatever is running.</p>", "app/main.cpp · app/device.cpp · app/panel*.cpp · app/pages.cpp · Dear ImGui 1.90.9-docking, ImPlot 0.16, GLFW 3.4"],
+      ["python", "Python library", "the Swabian API for SDE scripts", "<p>A drop-in replacement for the Swabian <code>TimeTagger</code> module: <code>createTimeTagger</code>, <code>Countrate</code>, <code>Correlation</code>, <code>SynchronizedMeasurements</code>, and so on. The SDE scripts run unchanged.</p>", "<p>A pybind11 module (<code>_dantagger</code>) wraps the core; <code>__init__.py</code> adds the Swabian names, argument checks and banners. It is strict about settings (<code>SettingsBusyError</code>), configures and calibrates on the first open after power-up, and never writes tags to disk. Results are bit-exact against the real Swabian library (27 tests with it as the oracle).</p>", "python/Dantagger/__init__.py · core/python/module.cpp · tests/"],
+      ["cli", "tdcctl", "command line, one command at a time", "<p>The board's command-line tool: status, GPX2 configure, calibrate, link test, count, stream to a file, decode a file.</p>", "<p>Unchanged from TDC_Firmware. It speaks to the board through the same host library, without the measurement core.</p>", "host/src/tdcctl_main.cpp"],
+    ]],
+    ["Core", [
+      ["tagger", "Tagger", "settings rules, device thread", "<p>The device as the Python layer sees it: settings, the engine, and a device thread that streams only while some measurement is running.</p>", "<p>When the number of running measurements goes from 0 to 1, the device thread starts a run. When it drops to 0, it stops it. Settings go through the policy: strict (Python) or restart (app). <code>exclusive()</code> runs a device command with the board idle: comparator, LEDs, GPX2, LVDS.</p>", "core/tagger.hpp · core/tagger.cpp"],
+      ["engine", "Engine + Merger", "order, windows, dispatch", "<p>Takes raw chunks from the backend, merges them into ordered blocks of tags, and runs each measurement over its window.</p>", "<p>One processing thread, dt-engine. The Merger applies dead time and delays and does the 4-way merge up to the watermark. <code>dispatch</code> cuts each block to every measurement's window and splits it around overflow markers. One mutex covers dispatch and all control calls, so synchronized groups change atomically.</p>", "core/engine.cpp · core/merger.cpp"],
+      ["meas", "Measurements", "Countrate … TimeTagStream", "<p>Countrate, Counter, Histogram, Correlation, HistogramND and TimeTagStream, with Swabian semantics. See the live versions below.</p>", "<p>Each implements <code>process(t, ch, n, begin, end)</code> over a time-ordered slice, plus <code>on_gap</code>, <code>on_special</code> and <code>clear_data</code>. Hot loops keep their counters in locals, because members aliased the histogram writes and cost 20 % on HistogramND.</p>", "core/measurements.hpp · core/measurements.cpp"],
+      ["decoder", "RecordDecoder", "records → ps times", "<p>Turns FPGA records into picosecond times per channel and keeps the watermark.</p>", "<p>Unwraps the reference index with the coarse clock and the measured clock ratio, re-anchors when that would be unsafe, and turns OVERFLOW markers into Swabian overflow tags (OverflowBegin, MissedEvents, OverflowEnd).</p>", "core/record_decoder.cpp"],
+      ["backends", "Backends", "board · file · simulation", "<p>Where the records come from: the real board (<code>TdcBackend</code>), a saved file (<code>FileBackend</code>), or synthetic signals (<code>SimBackend</code>, <code>ReplayBackend</code>).</p>", "<p><code>TdcBackend::run</code> reads the GPX2 configuration and clocking from a STATUS at the start of each run, sets up the decoder from it, refuses runs that <code>capture_problem</code> rejects, chooses compact records when allowed, and runs the receive and decode threads. Taps (the rate bar and the recorder) see every raw record.</p>", "core/tdc_backend.cpp · core/file_backend.cpp · core/sim_backend.cpp · core/recorder.cpp"],
+    ]],
+    ["Board library", [
+      ["session", "Session", "commands, streaming, calibration", "<p>Speaks the FPGA's protocol: one command at a time, each with its response, plus the streaming loop and the link calibration.</p>", "<p><code>stream_batches</code> sends START, reads DATA frames, checks each one (CRC, run ID, sequence, record format), expands compact words, and hands records to a sink after every USB read, until STOP or the window ends and the final response arrives. <code>LclkinScope</code> turns the GPX2's clock on only for the run.</p>", "host/src/tdc_session.cpp · host/include/tdcctl/"],
+      ["proto", "Protocol", "frames, CRC, records", "<p>Builds and parses the 4 KiB frames and decodes the 113-field response.</p>", "<p>Also holds <code>CompactExpander</code> (words → 64-bit records), <code>CompactPacker</code> (the FPGA's packer in software, for tests), and the rules (<code>capture_problem</code>, <code>compact_problem</code>, <code>max_result_latency_us</code>).</p>", "host/src/tdc_protocol.cpp · host/src/protocol.cpp"],
+      ["fake", "FakeFpga", "the board in software", "<p>A simulated FPGA that answers every command and streams records, used by the tests and by the app's <code>--simulate</code> and <code>--selftest</code>.</p>", "<p>It models the GPX2 configuration rules, calibration, both record formats and drops. The test suites run the whole path against it: 166 host checks and 4.45 M core checks.</p>", "host/include/tdcctl/fake_fpga.hpp"],
+    ]],
+    ["Driver", [
+      ["d3xx", "FTDI D3XX", "USB 3 to the FT601", "<p>FTDI's library for the FT601: bulk transfers over USB 3.</p>", "<p>Dantagger keeps 64 transfers of 4 KiB in flight (the default is 8) and a 4096-buffer library queue (the default is 256), so a busy PC does not let the FPGA's 0.6 ms queue overflow. Override with <code>DANTAGGER_USB=URBS,QUEUE</code>. The transfer size stays one frame, so a lone response still completes at once.</p>", "host/src/d3xx_transport.cpp · third_party/ (D3XX 1.1.8)"],
+    ]],
+  ];
+  const stack = document.getElementById("stack"), layerDetail = document.getElementById("layerDetail");
+  const items = {};
+  let curL = "engine";
+  LAYERS.forEach(([name, list]) => {
+    const row = document.createElement("div");
+    row.className = "layer";
+    row.innerHTML = `<div class="layer-name">${name}</div><div class="layer-items"></div>`;
+    list.forEach(([id, t, s, d1, d2, src]) => {
+      items[id] = { t, d1, d2, src };
+      const b = document.createElement("button");
+      b.className = "li-btn" + (id === "d3xx" ? " ext" : "");
+      b.dataset.id = id;
+      b.innerHTML = `<b>${t}</b><small>${s}</small>`;
+      b.addEventListener("click", () => { curL = id; renderLayer(); });
+      row.querySelector(".layer-items").appendChild(b);
+    });
+    stack.appendChild(row);
+  });
+  function renderLayer() {
+    const it = items[curL];
+    stack.querySelectorAll(".li-btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === curL)));
+    layerDetail.innerHTML = `<h3>${it.t}</h3>${it.d1}${DT.level >= 2 ? `<div><span class="depth-tag">Mechanism</span></div>${it.d2}` : `<p class="muted" style="font-size:.88rem">More at Mechanism detail.</p>`}${DT.level >= 3 ? `<div class="where">${it.src}</div>` : ""}`;
+  }
+  renderLayer();
+  DT.onDepth(renderLayer);
+
+  // ===========================================================================
+  // Pipeline simulation (1 ms steps)
+  // ===========================================================================
+  const NODES = [
+    ["fpga", "FPGA FIFO", "16 384 records", 16384],
+    ["usb", "USB buffers", "D3XX, ≈ 2 M records", 2.1e6],
+    ["thread", "dt-receive", "read + check", 0],
+    ["queue", "RecordQueue", "256 MB ≈ 33.5 M", 33.5e6],
+    ["thread", "dt-decode", "records → times", 0],
+    ["queue", "Engine queue", "256 MB budget", 33.5e6],
+    ["thread", "dt-engine", "merge + measure", 0],
+  ];
+  const pipeEl = document.getElementById("pipe");
+  pipeEl.innerHTML = NODES.map(([k, t, s], i) => `<div class="pnode ${k}"><h5>${t}</h5><div class="sub">${s}</div>${k === "thread" ? `<div class="util"><i id="pu${i}"></i></div><div class="pnum" id="pn${i}"></div>` : `<div class="lvl-bar"><i id="pl${i}"></i></div><div class="pnum" id="pn${i}"></div>`}</div>`).join("");
+  let P;
+  function pReset() { P = { lv: [0, 0, 0, 0, 0, 0, 0], drop: 0, captured: 0, t: 0, flow: [0, 0, 0] }; }
+  pReset();
+  document.getElementById("pReset").addEventListener("click", pReset);
+  const pRate = document.getElementById("pRate");
+  function pStep(dt) {
+    const R = +pRate.value * 1e6, link = +document.getElementById("pFmt").value * 1e6;
+    const busy = document.getElementById("pBusy").checked ? 0.5 : 1;
+    const cap = [41.7e6 * busy, 47.6e6 * busy, (document.getElementById("pHeavy").checked ? 15e6 : 38.3e6) * busy];
+    const L = P.lv;
+    // engine drains its queue
+    const eng = Math.min(L[5], cap[2] * dt); L[5] -= eng;
+    // decode: from RecordQueue into engine queue
+    const dec = Math.min(L[3], cap[1] * dt, NODES[5][3] - L[5]); L[3] -= dec; L[5] += dec;
+    // receive: from USB buffers into RecordQueue
+    const rec = Math.min(L[1], cap[0] * dt, NODES[3][3] - L[3]); L[1] -= rec; L[3] += rec;
+    // link: FPGA FIFO -> USB buffers
+    const lk = Math.min(L[0] + R * dt, link * dt, NODES[1][3] - L[1]);
+    const into = R * dt;
+    let fifo = L[0] + into - lk;
+    if (fifo > NODES[0][3]) { P.drop += fifo - NODES[0][3]; fifo = NODES[0][3]; }
+    P.captured += into - Math.max(0, L[0] + into - lk - NODES[0][3]);
+    L[0] = Math.max(0, fifo); L[1] += lk;
+    P.flow = [rec / dt / cap[0], dec / dt / cap[1], eng / dt / cap[2]];
+    P.rates = [rec / dt, dec / dt, eng / dt];
+    P.t += dt;
+  }
+  function pDraw() {
+    document.getElementById("pRateOut").textContent = (+pRate.value).toFixed(2) + " M/s";
+    NODES.forEach(([k, , , capN], i) => {
+      if (k === "thread") {
+        const j = (i - 2) / 2, u = Math.min(1, P.flow[j] || 0);
+        document.getElementById("pu" + i).style.width = (u * 100).toFixed(0) + "%";
+        document.getElementById("pn" + i).textContent = `${((P.rates ? P.rates[j] : 0) / 1e6).toFixed(1)} M/s · ${(u * 100).toFixed(0)} % busy`;
+      } else {
+        const f = Math.min(1, P.lv[i] / capN);
+        const bar = document.getElementById("pl" + i);
+        bar.style.height = (f * 100).toFixed(1) + "%";
+        bar.style.background = f > 0.98 ? "var(--bad)" : f > 0.5 ? "var(--warn)" : k === "fpga" ? "var(--fpga)" : k === "usb" ? "var(--link)" : "var(--muted)";
+        document.getElementById("pn" + i).textContent = `${(f * 100).toFixed(f < 0.01 && f > 0 ? 2 : 0)} % full`;
+      }
+    });
+    document.getElementById("pStats").innerHTML = `<div class="stat"><b>${P.t.toFixed(1)} s</b><span>simulated</span></div>
+      <div class="stat"><b style="color:${P.drop > 0 ? "var(--bad)" : "inherit"}">${DT.fmtInt(Math.round(P.drop))}</b><span>events dropped at the FPGA</span></div>
+      <div class="stat"><b>${(P.rates ? P.rates[2] / 1e6 : 0).toFixed(1)} M/s</b><span>tags measured</span></div>`;
+  }
+  let pLast = 0;
+  (function pLoop(t) {
+    if (pLast) { const real = Math.min(0.05, (t - pLast) / 1000); for (let k = 0; k < 10; k++) pStep(real / 10); pDraw(); }
+    pLast = t; requestAnimationFrame(pLoop);
+  })(0);
+
+  // ===========================================================================
+  // Wrap decoder
+  // ===========================================================================
+  const wBits = document.getElementById("wBits"), wGap = document.getElementById("wGap"), wRatio = document.getElementById("wRatio"), wFmt = document.getElementById("wFmt");
+  function wCompute() {
+    const bits = +wBits.value, wrap = Math.pow(2, bits) * 125e3;        // ps
+    const gap = Math.pow(10, +wGap.value) * 1e12;                           // ps
+    const frameBits = bits + 18;
+    const spread = ((16 + 1) * frameBits * 2 * 1e-3 + 0.5) * 1e6;          // ps
+    const coarseU = wFmt.value === "compact" ? (16384 + 16) * 8000 : 0;
+    const spreadAll = spread + coarseU;
+    const runc = wRatio.value === "measured" ? 3 * spreadAll / 1e13 + 1e-9 : 2e-4;
+    const drift = gap * runc;
+    const unc = spreadAll + drift;
+    const limit = 0.45 * wrap;
+    const maxGap = (limit - spreadAll) / runc;
+    return { bits, wrap, gap, spread, coarseU, runc, drift, unc, limit, maxGap, ok: unc <= limit };
+  }
+  function wDraw() {
+    const c = wCompute();
+    document.getElementById("wGapOut").textContent = DT.fmtTime(c.gap);
+    const cv = document.getElementById("wrapCv");
+    const size = Math.min(340, cv.parentElement.clientWidth);
+    const { ctx } = DT.canvas(cv, size);
+    const W = cv.parentElement.clientWidth, cx = W / 2, cy = size / 2, R = size / 2 - 46;
+    ctx.clearRect(0, 0, W, size);
+    const ink = DT.color("--ink"), muted = DT.color("--muted"), rule = DT.color("--rule"), host = DT.color("--host"), bad = DT.color("--bad"), good = DT.color("--good");
+    // dial
+    ctx.strokeStyle = rule; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.stroke();
+    ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.textAlign = "center";
+    for (let k = 0; k < 8; k++) {
+      const a = -Math.PI / 2 + (k / 8) * 2 * Math.PI;
+      ctx.beginPath(); ctx.moveTo(cx + (R - 9) * Math.cos(a), cy + (R - 9) * Math.sin(a)); ctx.lineTo(cx + (R + 5) * Math.cos(a), cy + (R + 5) * Math.sin(a)); ctx.strokeStyle = muted; ctx.stroke();
+      if (k % 2 === 0) { ctx.textAlign = k === 2 ? "left" : k === 6 ? "right" : "center"; ctx.fillText(DT.fmtTime((k / 8) * c.wrap, 3), cx + (R + 14) * Math.cos(a), cy + (R + 16) * Math.sin(a) + 4); }
+    }
+    // true position and the prediction's uncertainty arc
+    const trueFrac = 0.31;
+    const predFrac = trueFrac + 0.35 * (c.unc / c.wrap) * Math.sin(+wGap.value * 3);
+    const half = Math.min(Math.PI * 0.999, (c.unc / c.wrap) * 2 * Math.PI);
+    const ap = -Math.PI / 2 + predFrac * 2 * Math.PI;
+    ctx.strokeStyle = c.ok ? host : bad; ctx.globalAlpha = 0.45; ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.arc(cx, cy, R, ap - half, ap + half); ctx.stroke(); ctx.globalAlpha = 1;
+    // 0.45-wrap limit marks around the prediction
+    ctx.strokeStyle = ink; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+    for (const s of [-1, 1]) { const a = ap + s * 0.45 * 2 * Math.PI; ctx.beginPath(); ctx.moveTo(cx + (R - 18) * Math.cos(a), cy + (R - 18) * Math.sin(a)); ctx.lineTo(cx + (R + 12) * Math.cos(a), cy + (R + 12) * Math.sin(a)); ctx.stroke(); }
+    ctx.setLineDash([]);
+    // needle: the event's GPX2 time modulo the wrap (what the record says)
+    const at = -Math.PI / 2 + trueFrac * 2 * Math.PI;
+    ctx.strokeStyle = ink; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + (R - 4) * Math.cos(at), cy + (R - 4) * Math.sin(at)); ctx.stroke();
+    ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = c.ok ? good : bad; ctx.font = "600 14px " + DT.color("--f-display");
+    ctx.fillText(c.ok ? "unambiguous" : "ambiguous", cx, cy + 26);
+    ctx.font = "12px " + DT.color("--f-mono"); ctx.fillStyle = muted; ctx.fillText("one lap = " + DT.fmtTime(c.wrap, 4), cx, cy + 44);
+    ctx.textAlign = "left";
+    // numbers
+    document.getElementById("wCalc").innerHTML = `
+      <dt>One lap (2<sup>${c.bits}</sup> × 125 ns)</dt><dd>${DT.fmtTime(c.wrap, 4)}</dd>
+      <dt>Readout latency spread</dt><dd>${DT.fmtTime(c.spread)}</dd>
+      <dt>Coarse time uncertainty (compact)</dt><dd>${c.coarseU ? DT.fmtTime(c.coarseU) : "0"}</dd>
+      <dt>Clock drift over the silence (${c.runc < 1e-5 ? (c.runc * 1e9).toFixed(1) + " ppb" : (c.runc * 1e6).toFixed(0) + " ppm"})</dt><dd>${DT.fmtTime(c.drift)}</dd>
+      <dt class="sum"><b>Prediction uncertainty</b></dt><dd class="sum"><b>${DT.fmtTime(c.unc)}</b></dd>
+      <dt>Limit: 0.45 of a lap</dt><dd>${DT.fmtTime(c.limit)}</dd>
+      <dt>Longest safe silence</dt><dd>${c.maxGap > 0 ? DT.fmtTime(c.maxGap) : "none"}</dd>`;
+    document.getElementById("wVerdict").innerHTML = c.ok
+      ? `<span class="pill good">lap chosen: exact to the picosecond</span>`
+      : `<span class="pill bad">re-anchor: time from the coarse clock (≈ 1 µs), new ratio segment</span>`;
+  }
+  [wBits, wGap, wRatio, wFmt].forEach((e) => e.addEventListener("input", wDraw));
+  wDraw(); DT.onResize(wDraw); DT.onTheme(wDraw);
+
+  // ===========================================================================
+  // Watermark and merge
+  // ===========================================================================
+  const SPAN = 14000000;          // ps shown (14 µs)
+  const MARGIN = 2000000;         // ps, a scaled-down watermark margin for the picture
+  let M = { now: 3000000, seed: 3, ev: null };
+  function mGen() {
+    const r = DT.rng(M.seed * 7919);
+    M.ev = [[], [], [], []];
+    for (let c = 0; c < 4; c++) {
+      let t = r.exp(1.6e6), arr = 0;
+      while (t < SPAN - 1000000) {
+        const lat = 300000 + r() * 1400000 + c * 100000;   // ≤ 2 µs: the picture's watermark margin
+        arr = Math.max(arr, t + lat);           // the chip keeps per-channel order
+        M.ev[c].push({ t: Math.round(t / 1000) * 1000, arr });
+        t += r.exp(c === 3 ? 1.2e6 : 1.8e6);
+      }
+    }
+  }
+  mGen();
+  const mD2 = document.getElementById("mD2"), mDead = document.getElementById("mDead");
+  function mDraw() {
+    document.getElementById("mD2Out").textContent = DT.fmtTime(+mD2.value * 1000);
+    document.getElementById("mDeadOut").textContent = +mDead.value ? DT.fmtTime(+mDead.value * 1000) : "off";
+    const delays = [0, +mD2.value * 1000, 0, 0];
+    const dead = +mDead.value * 1000;
+    const wm = Math.max(0, M.now - MARGIN);
+    const limit = wm + Math.min(...delays);
+    const cv = document.getElementById("mergeCv");
+    const { ctx, w } = DT.canvas(cv, 300);
+    const x0 = 64, x1 = w - 12, X = (ps) => x0 + (ps / SPAN) * (x1 - x0);
+    const laneY = (c) => 30 + c * 44, mergeY = 30 + 4 * 44 + 30;
+    const muted = DT.color("--muted"), rule = DT.color("--rule"), host = DT.color("--host"), ink = DT.color("--ink");
+    ctx.clearRect(0, 0, w, 300);
+    // final region
+    ctx.fillStyle = host; ctx.globalAlpha = 0.12; ctx.fillRect(x0, 12, Math.max(0, Math.min(X(limit), x1) - x0), mergeY + 22 - 12); ctx.globalAlpha = 1;
+    // now and watermark
+    const vline = (t, col, label, dash) => { if (t < 0 || t > SPAN) return; ctx.strokeStyle = col; ctx.setLineDash(dash); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(t), 12); ctx.lineTo(X(t), mergeY + 22); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = col; ctx.textAlign = "center"; ctx.fillText(label, X(t), 10); ctx.textAlign = "left"; };
+    vline(M.now, muted, "now (latest coarse time)", [4, 3]);
+    vline(wm, ink, "watermark", []);
+    // lanes
+    const merged = [];
+    for (let c = 0; c < 4; c++) {
+      const y = laneY(c), col = DT.chColor(c + 1);
+      ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillStyle = col; ctx.fillText("ch " + (c + 1) + (delays[c] ? " +d" : ""), 8, y + 4);
+      let last = null;
+      for (const e of M.ev[c]) {
+        const got = e.arr <= M.now;
+        let deadDrop = false;
+        if (dead > 0 && last !== null && e.t - last < dead) deadDrop = true; else last = e.t;
+        const td = e.t + delays[c];
+        if (delays[c] && got) { ctx.strokeStyle = col; ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(X(e.t), y); ctx.lineTo(X(td), y - 10); ctx.stroke(); ctx.globalAlpha = 1; }
+        const px = X(delays[c] ? td : e.t), py = delays[c] ? y - 10 : y;
+        if (deadDrop) {
+          ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px - 4, py - 4); ctx.lineTo(px + 4, py + 4); ctx.moveTo(px + 4, py - 4); ctx.lineTo(px - 4, py + 4); ctx.stroke(); ctx.lineWidth = 1;
+          continue;
+        }
+        ctx.beginPath(); ctx.arc(px, py, 5, 0, 2 * Math.PI);
+        if (got) { ctx.fillStyle = col; ctx.fill(); } else { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1; }
+        if (got && td < limit && td >= 0) merged.push({ t: td, c: c + 1 });
+      }
+    }
+    // merged stream
+    merged.sort((a, b) => a.t - b.t || a.c - b.c);
+    ctx.fillStyle = muted; ctx.fillText("merged", 8, mergeY + 4);
+    ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(x0, mergeY); ctx.lineTo(x1, mergeY); ctx.stroke();
+    merged.forEach((m, i) => {
+      ctx.fillStyle = DT.chColor(m.c); ctx.fillRect(X(m.t) - 3, mergeY - 9, 6, 18);
+      if (i % 2 === 0 || merged.length < 14) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText(String(i + 1), X(m.t), mergeY + 22); ctx.textAlign = "left"; }
+    });
+    // axis
+    ctx.fillStyle = muted;
+    for (let t = 0; t <= SPAN; t += 2000000) { ctx.textAlign = "center"; ctx.fillText((t / 1e6) + " µs", X(t), 296); }
+    ctx.textAlign = "left";
+  }
+  let mTimer = null;
+  document.getElementById("mStep").addEventListener("click", () => { M.now = Math.min(SPAN + MARGIN, M.now + 1000000); mDraw(); });
+  document.getElementById("mReset").addEventListener("click", () => { M.now = 1000000; mDraw(); });
+  document.getElementById("mNew").addEventListener("click", () => { M.seed++; mGen(); mDraw(); });
+  document.getElementById("mPlay").addEventListener("click", (e) => {
+    if (mTimer) { clearInterval(mTimer); mTimer = null; e.target.textContent = "Play"; return; }
+    if (M.now >= SPAN + MARGIN) M.now = 1000000;
+    e.target.textContent = "Pause";
+    mTimer = setInterval(() => { M.now += 250000; if (M.now >= SPAN + MARGIN) { clearInterval(mTimer); mTimer = null; e.target.textContent = "Play"; } mDraw(); }, 90);
+  });
+  [mD2, mDead].forEach((e) => e.addEventListener("input", mDraw));
+  mDraw(); DT.onResize(mDraw); DT.onTheme(mDraw);
+
+  // ===========================================================================
+  // Windows timeline
+  // ===========================================================================
+  function tDraw() {
+    const gapOn = document.getElementById("tGap").checked;
+    const at = +document.getElementById("tAt").value, len = +document.getElementById("tLen").value;
+    document.getElementById("tAtOut").textContent = at + " ms";
+    document.getElementById("tLenOut").textContent = len + " ms";
+    const start = 10, dur = 60, total = 100;
+    const end = gapOn && at > start && at < start + dur ? start + dur + len : start + dur;
+    const X = (v) => 70 + (v / total) * 900;
+    const run = (a, b, label) => `<rect x="${X(a)}" y="40" width="${X(b) - X(a)}" height="26" rx="3" fill="var(--fpga-soft)" stroke="var(--fpga)"/><text x="${X(a) + 6}" y="57" font-size="12" fill="var(--fpga)" font-family="var(--f-mono)">${label}</text>`;
+    let runs = gapOn ? run(0, at, "FPGA run 1") + run(at + len, total, "FPGA run 2") : run(0, total, "FPGA run 1");
+    let gapSvg = gapOn ? `<rect x="${X(at)}" y="30" width="${X(at + len) - X(at)}" height="100" fill="var(--bad)" opacity="0.08"/><text x="${(X(at) + X(at + len)) / 2}" y="24" text-anchor="middle" font-size="11" fill="var(--bad)" font-family="var(--f-mono)">stop · apply trigger · start</text>` : "";
+    const win = gapOn && at > start && at < start + dur
+      ? `<rect x="${X(start)}" y="84" width="${X(at) - X(start)}" height="22" rx="3" fill="var(--host)" opacity="0.85"/><rect x="${X(at + len)}" y="84" width="${X(end) - X(at + len)}" height="22" rx="3" fill="var(--host)" opacity="0.85"/><line x1="${X(at)}" x2="${X(at + len)}" y1="95" y2="95" stroke="var(--host)" stroke-dasharray="3 3"/>`
+      : `<rect x="${X(start)}" y="84" width="${X(end) - X(start)}" height="22" rx="3" fill="var(--host)" opacity="0.85"/>`;
+    document.getElementById("tl").innerHTML = `<svg viewBox="0 0 1000 170" role="img" aria-label="Measurement window across FPGA runs">
+      <text x="4" y="57" font-size="12" fill="var(--muted)" font-family="var(--f-body)">board</text>
+      <text x="4" y="99" font-size="12" fill="var(--muted)" font-family="var(--f-body)">startFor</text>
+      ${gapSvg}${runs}${win}
+      <line x1="${X(start)}" x2="${X(start)}" y1="76" y2="114" stroke="var(--ink)"/><text x="${X(start)}" y="128" text-anchor="middle" font-size="11" fill="var(--ink)" font-family="var(--f-mono)">start</text>
+      <line x1="${X(end)}" x2="${X(end)}" y1="76" y2="114" stroke="var(--ink)"/><text x="${X(end)}" y="128" text-anchor="middle" font-size="11" fill="var(--ink)" font-family="var(--f-mono)">end</text>
+      ${gapOn && end !== start + dur ? `<line x1="${X(start + dur)}" x2="${X(start + dur)}" y1="80" y2="110" stroke="var(--muted)" stroke-dasharray="2 2"/><text x="${X(start + dur)}" y="146" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="var(--f-mono)">without the fix</text>` : ""}
+      <text x="${(X(start) + X(end)) / 2}" y="162" text-anchor="middle" font-size="12" fill="var(--muted)" font-family="var(--f-body)">startFor(60 ms): 60 ms of captured tags${gapOn && end !== start + dur ? `, ending ${len} ms later on the clock` : ""}</text>
+    </svg>`;
+  }
+  ["tGap", "tAt", "tLen"].forEach((id) => document.getElementById(id).addEventListener("input", tDraw));
+  tDraw();
+
+  // ===========================================================================
+  // The lab: a simulated stream and JS ports of the measurement loops
+  // ===========================================================================
+  function* stream(seed, comb) {
+    // yields {t, c} in time order, 1 ms of tags at a time
+    const r = DT.rng(seed);
+    const period = 1e6;                        // 1 MHz laser
+    let nextPulse = 437, poisson = r.exp(2e7), dark = [r.exp(3.33e9), r.exp(3.33e9)];
+    const q = (t) => (comb ? Math.round(Math.floor((t % 125000) / 44.12) * 44.12) + Math.floor(t / 125000) * 125000 : Math.round(t));
+    let ms = 0;
+    while (true) {
+      const end = (ms + 1) * 1e9, out = [];
+      while (nextPulse < end) {
+        out.push({ t: q(nextPulse), c: 4 });
+        if (r() < 0.10) out.push({ t: q(nextPulse + 31550 + 25 * r.gauss()), c: 1 });
+        if (r() < 0.08) out.push({ t: q(nextPulse + 31750 + 35 * r.gauss()), c: 2 });
+        nextPulse += period;
+      }
+      while (poisson < end) { out.push({ t: q(poisson), c: 3 }); poisson += r.exp(2e7); }
+      for (let k = 0; k < 2; k++) while (dark[k] < end) { out.push({ t: q(dark[k]), c: k + 1 }); dark[k] += r.exp(3.33e9); }
+      out.sort((a, b) => a.t - b.t || a.c - b.c);
+      ms++;
+      yield { tags: out, begin: (ms - 1) * 1e9, end };
+    }
+  }
+  const fastFloor = (x, bw) => Math.floor(x / bw);
+
+  const MEAS = {
+    Countrate: {
+      params: [["channels", "Channels", "1,2,3,4"]],
+      make(p) { const ch = p.channels; return { counts: [0, 0, 0, 0, 0], dur: 0, ch,
+        process(t, c, b, e) { for (let i = 0; i < t.length; i++) this.counts[c[i]]++; this.dur += e - b; } }; },
+      stats(m) { return m.ch.map((c) => [m.dur ? DT.fmtRate((m.counts[c] / m.dur) * 1e12) : "–", `ch ${c} (${DT.fmtInt(m.counts[c])} counts)`, c]); },
+      draw(m, cv) { bars(cv, m.ch.map((c) => ({ v: m.dur ? (m.counts[c] / m.dur) * 1e12 : 0, c, label: "ch " + c })), "rate (/s)"); },
+      sem: "<p><b>getData()</b> = counts ÷ capture duration, per channel. Before any capture it is NaN. The duration counts captured time only, so a run restart does not dilute the rate.</p>",
+      code: (p) => `rate = TimeTagger.Countrate(tagger, [${p.channels.join(", ")}])\nrate.startFor(int(${p._dur}e9))      # ${p._dur} ms in ps\nrate.waitUntilFinished()\nprint(rate.getData())               # counts per second`,
+    },
+    Counter: {
+      params: [["channels", "Channels", "1,2,3"], ["binwidth", "Bin width (ps)", "1000000000"], ["n", "Values kept", "100"]],
+      make(p) { const bw = p.binwidth, n = p.n, ch = p.channels; return { bw, n, ch, cur: [0, 0, 0, 0, 0], done: [], start: null,
+        process(t, c, b, e) {
+          if (this.start === null) this.start = b;
+          let i = 0;
+          const binOf = (x) => fastFloor(x - this.start, this.bw);
+          while (true) {
+            const binEnd = this.start + (this.done.length + 1) * this.bw;
+            while (i < t.length && t[i] < binEnd) { this.cur[c[i]]++; i++; }
+            if (binEnd <= e) { this.done.push(this.ch.map((ch) => this.cur[ch])); this.cur = [0, 0, 0, 0, 0]; } else break;
+          }
+        } }; },
+      stats(m) { const last = m.done.slice(-m.n); return m.ch.map((c, k) => { const v = last.map((r) => r[k]); const mean = v.reduce((a, b) => a + b, 0) / (v.length || 1); const vr = v.reduce((a, b) => a + (b - mean) ** 2, 0) / (v.length || 1); return [mean.toFixed(1), `ch ${c} mean per bin · var/mean ${mean ? (vr / mean).toFixed(2) : "–"}`, c]; }); },
+      draw(m, cv) { lines(cv, m.ch.map((c, k) => ({ c, ys: m.done.slice(-m.n).map((r) => r[k]) })), m.n, "counts per bin (rolling, newest right)"); },
+      sem: "<p>Bins of <b>capture time</b> [k·bw, (k+1)·bw) from the window's start. Only <b>completed</b> bins are stored, in a circular buffer of n values. Rolling <code>getData()</code> puts the newest last. The Poisson channel 3 shows var/mean ≈ 1. Channels 1 and 2 click on 10 % and 8 % of a fixed number of laser pulses, so their var/mean is 1 − p ≈ 0.9.</p>",
+      code: (p) => `counter = TimeTagger.Counter(tagger, [${p.channels.join(", ")}], binwidth=${p.binwidth}, n_values=${p.n})\ncounter.startFor(int(${p._dur}e9))\ncounter.waitUntilFinished()\ndata = counter.getData()            # channels × n_values, newest last`,
+    },
+    Histogram: {
+      params: [["click", "Click channel", "1"], ["start", "Start channel", "4"], ["binwidth", "Bin width (ps)", "20"], ["n", "Bins", "2000"]],
+      make(p) { const m = { bw: p.binwidth, n: p.n, range: p.binwidth * p.n, click: p.click[0], start: p.start[0], h: new Float64Array(p.n), starts: [], head: 0, sN: 0, cN: 0,
+        process(t, c) {
+          for (let i = 0; i < t.length; i++) {
+            if (c[i] === this.start) { this.starts.push(t[i]); this.sN++; }
+            if (c[i] === this.click) {
+              this.cN++;
+              while (this.head < this.starts.length && this.starts[this.head] < t[i] - this.range + 1) this.head++;
+              for (let k = this.head; k < this.starts.length; k++) this.h[fastFloor(t[i] - this.starts[k], this.bw)]++;
+            }
+          }
+          if (this.head > 4096) { this.starts = this.starts.slice(this.head); this.head = 0; }
+        } }; return m; },
+      stats(m) { const tot = m.h.reduce((a, b) => a + b, 0); let pk = 0; m.h.forEach((v, i) => { if (v > m.h[pk]) pk = i; }); return [[DT.fmtInt(tot), "counts"], [DT.fmtInt(m.sN), "starts"], [DT.fmtInt(m.cN), "clicks"], [DT.fmtTime(pk * m.bw + m.bw / 2, 4), "tallest bin"]]; },
+      draw(m, cv) { hist(cv, m.h, 0, m.bw, DT.chColor(m.click), "t(click) − t(start)"); },
+      sem: "<p><b>Multiple start, multiple stop.</b> Every click is paired with <b>every</b> start before it that is less than the range (bw × n) earlier, so the delay is ≥ 0. Bin k covers [k·bw, (k+1)·bw). A click on the start channel itself counts the self-pair in bin 0. Starts older than the range are dropped from the sliding window.</p>",
+      code: (p) => `hist = TimeTagger.Histogram(tagger, click_channel=${p.click[0]}, start_channel=${p.start[0]},\n                           binwidth=${p.binwidth}, n_bins=${p.n})\nhist.startFor(int(${p._dur}e9))\nhist.waitUntilFinished()\ncounts, edges = hist.getData(), hist.getIndex()   # index = left edges, ps`,
+    },
+    Correlation: {
+      params: [["c1", "Channel 1", "1"], ["c2", "Channel 2", "2"], ["binwidth", "Bin width (ps)", "10"], ["n", "Bins", "200"]],
+      make(p) { const bw = p.binwidth, n = p.n; const origin = -Math.trunc((bw * n) / 2); return { bw, n, origin, hi: origin + bw * n, c1: p.c1[0], c2: p.c2[0], h: new Float64Array(n), b1: [], h1: 0, b2: [], h2: 0, n1: 0, n2: 0, dur: 0,
+        process(t, c, b, e) {
+          this.dur += e - b;
+          for (let i = 0; i < t.length; i++) {
+            const tt = t[i];
+            if (this.c1 === this.c2) {
+              if (c[i] !== this.c1) continue;
+              const keep = Math.max(this.hi, 1 - this.origin);
+              while (this.h1 < this.b1.length && this.b1[this.h1] < tt - keep + 1) this.h1++;
+              for (let k = this.h1; k < this.b1.length; k++) { const dd = tt - this.b1[k]; if (dd < this.hi) this.h[fastFloor(dd - this.origin, this.bw)]++; if (-dd >= this.origin) this.h[fastFloor(-dd - this.origin, this.bw)]++; }
+              this.h[fastFloor(-this.origin, this.bw)]++; this.b1.push(tt); this.n1++; this.n2++;
+              continue;
+            }
+            if (c[i] === this.c2) {
+              while (this.h1 < this.b1.length && this.b1[this.h1] < tt + this.origin) this.h1++;
+              for (let k = this.h1; k < this.b1.length; k++) this.h[fastFloor(this.b1[k] - tt - this.origin, this.bw)]++;
+              this.b2.push(tt); this.n2++;
+            } else if (c[i] === this.c1) {
+              while (this.h2 < this.b2.length && this.b2[this.h2] < tt - this.hi + 1) this.h2++;
+              for (let k = this.h2; k < this.b2.length; k++) this.h[fastFloor(tt - this.b2[k] - this.origin, this.bw)]++;
+              this.b1.push(tt); this.n1++;
+            }
+          }
+          if (this.h1 > 4096) { this.b1 = this.b1.slice(this.h1); this.h1 = 0; }
+          if (this.h2 > 4096) { this.b2 = this.b2.slice(this.h2); this.h2 = 0; }
+        } }; },
+      stats(m) { const tot = m.h.reduce((a, b) => a + b, 0); let pk = 0; m.h.forEach((v, i) => { if (v > m.h[pk]) pk = i; }); const g2 = m.n1 && m.n2 ? (m.h[pk] * m.dur) / (m.bw * m.n1 * m.n2) : NaN; return [[DT.fmtInt(tot), "pairs"], [DT.fmtTime(m.origin + pk * m.bw + m.bw / 2, 4), "peak at t(ch1) − t(ch2)"], [isNaN(g2) ? "–" : g2.toFixed(0), "normalised peak (g2)"]]; },
+      draw(m, cv) { hist(cv, m.h, m.origin, m.bw, DT.chColor(m.c1), "t(channel 1) − t(channel 2)"); },
+      sem: "<p>A histogram of <b>t(ch1) − t(ch2) over all pairs</b>, both signs. Bin k covers [origin + k·bw, origin + (k+1)·bw) with origin = −(n·bw)/2 (integer division). <code>getIndex()</code> gives the left edges. Normalised (g2) = counts × capture duration ÷ (bw × n1 × n2). With the same channel twice it is an autocorrelation, and the self-pairs land at 0.</p><p data-depth=\"2\">Here the peak sits at −200 ps: channel 2's detector clicks 0.2 ns after channel 1's on the same pulse. Its width is √(25² + 35²) ≈ 43 ps rms. Side peaks from neighbouring pulses would sit at ±1 µs, outside this range.</p>",
+      code: (p) => `corr = TimeTagger.Correlation(tagger, ${p.c1[0]}, ${p.c2[0]}, binwidth=${p.binwidth}, n_bins=${p.n})\ncorr.startFor(int(${p._dur}e9))\ncorr.waitUntilFinished()\ng2 = corr.getDataNormalized()`,
+    },
+    HistogramND: {
+      params: [["start", "Start channel", "4"], ["stops", "Stop channels (x, y)", "1,2"], ["binwidth", "Bin width (ps), both axes", "50"], ["n", "Bins per axis", "120"], ["offset", "Input delay on the stops (ps)", "-28000"]],
+      make(p) { const st = p.stops.slice(0, 2); return { start: p.start[0], stops: st, bw: p.binwidth, n: p.n, range: p.binwidth * p.n, off: p.offset, h: new Float64Array(p.n * p.n), active: false, t0: 0, got: 0, flat: 0, starts: 0, aband: 0, outside: 0,
+        process(t, c) {
+          for (let i = 0; i < t.length; i++) {
+            const ci = c[i];
+            let tt = t[i];
+            if (ci === this.start) { this.starts++; if (this.active) this.aband++; this.active = true; this.t0 = tt; this.got = 0; this.flat = 0; }
+            let axes = 0; this.stops.forEach((s, k) => { if (s === ci) axes |= 1 << k; });
+            if (!axes || !this.active) continue;
+            tt += this.off;
+            axes &= ~this.got;
+            const d = tt - this.t0;
+            for (let k = 0; k < 2; k++) {
+              if (!(axes & (1 << k))) continue;
+              if (d >= this.range || d < 0) { this.active = false; this.outside++; break; }
+              this.flat += fastFloor(d, this.bw) * (k === 0 ? this.n : 1);
+              this.got |= 1 << k;
+            }
+            if (this.active && this.got === 3) { this.h[this.flat]++; this.active = false; }
+          }
+        } }; },
+      stats(m) { const tot = m.h.reduce((a, b) => a + b, 0); return [[DT.fmtInt(tot), "pairs counted"], [DT.fmtInt(m.starts), "starts"], [DT.fmtInt(m.aband), "abandoned (new start first)"], [DT.fmtInt(m.outside), "outside the range"]]; },
+      draw(m, cv) { heat(cv, m); },
+      sem: "<p><b>Single start, first stop per axis.</b> A start opens a slot, and a new start replaces an unfinished one (abandoned). On each axis only the <b>first</b> stop after the start counts. A count needs every axis in range, and then the start is used up. A stop beyond its axis's range ends the start (outside). The data is row-major: the first stop channel is the row.</p><p data-depth=\"2\">The stops here carry a −28 ns input delay, like a zoom in the app's 2D panel, so a 120 × 50 ps grid covers 28.0 to 34.0 ns. The single spot is both detectors clicking on the same pulse: about 0.8 % of pulses.</p>",
+      code: (p) => `# the stops' input delay shifts the window, as the app's 2D zoom does\ntagger.setInputDelay(${p.stops[0]}, ${p.offset}); tagger.setInputDelay(${p.stops[1] ?? p.stops[0]}, ${p.offset})\nh2 = TimeTagger.HistogramND(tagger, ${p.start[0]}, [${p.stops.slice(0, 2).join(", ")}], [${p.binwidth}, ${p.binwidth}], [${p.n}, ${p.n}])\nh2.startFor(int(${p._dur}e9))\nh2.waitUntilFinished()\nmap2d = np.reshape(h2.getData(), (${p.n}, ${p.n}))`,
+    },
+    TimeTagStream: {
+      params: [["channels", "Channels", "1,2,3,4"], ["n", "Buffer size (tags)", "40"]],
+      make(p) { return { ch: p.channels, n: p.n, buf: [], total: 0,
+        process(t, c) { for (let i = 0; i < t.length; i++) if (this.ch.includes(c[i])) { this.total++; if (this.buf.length < this.n) this.buf.push([t[i], c[i]]); } } }; },
+      stats(m) { return [[DT.fmtInt(m.total), "tags on the chosen channels"], [DT.fmtInt(m.buf.length), "kept in the buffer"]]; },
+      draw(m, cv) { table(cv, m); },
+      sem: "<p>An in-memory copy of the tags (time, channel, type) for the chosen channels, up to the buffer size. <code>getData()</code> hands them over and empties the buffer. The Python library never writes them to disk. In the app, <b>Start streaming</b> writes the <i>raw records</i> to a file in the data folder for a set time, and any panel can later read that file instead of the live stream.</p>",
+      code: (p) => `stream = TimeTagger.TimeTagStream(tagger, n_max_events=${p.n}, channels=[${p.channels.join(", ")}])\nstream.startFor(int(${p._dur}e9))\nstream.waitUntilFinished()\nbuf = stream.getData()\nprint(buf.getTimestamps()[:10], buf.getChannels()[:10])`,
+    },
+  };
+
+  // ---- drawing helpers --------------------------------------------------------
+  const PH = 300;
+  function frame(cv) { const { ctx, w, h } = DT.canvas(cv, PH); ctx.clearRect(0, 0, w, h); return { ctx, w, h }; }
+  function axes(ctx, w, h, xl, xr, yl, label) {
+    const muted = DT.color("--muted"), grid = DT.color("--grid");
+    ctx.strokeStyle = grid; ctx.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) { const y = 16 + (k / 4) * (h - 52); ctx.beginPath(); ctx.moveTo(48, y); ctx.lineTo(w - 8, y); ctx.stroke(); }
+    ctx.fillStyle = muted; ctx.textAlign = "left"; ctx.fillText(yl, 48, 11);
+    ctx.textAlign = "center"; ctx.fillText(label, (w + 40) / 2, h - 4);
+    ctx.textAlign = "left"; ctx.fillText(xl, 48, h - 20); ctx.textAlign = "right"; ctx.fillText(xr, w - 8, h - 20); ctx.textAlign = "left";
+  }
+  function bars(cv, items, yl) {
+    const { ctx, w, h } = frame(cv);
+    const max = Math.max(1, ...items.map((i) => i.v)) * 1.08;
+    axes(ctx, w, h, "", "", yl + "  ·  max " + DT.fmtRate(max / 1.08), "");
+    const bw = (w - 60) / items.length;
+    items.forEach((it, k) => {
+      const bh = (it.v / max) * (h - 52);
+      ctx.fillStyle = DT.chColor(it.c); ctx.fillRect(52 + k * bw + bw * 0.2, 16 + (h - 52) - bh, bw * 0.6, bh);
+      ctx.fillStyle = DT.color("--ink"); ctx.textAlign = "center"; ctx.fillText(it.label + ": " + DT.fmtRate(it.v), 52 + k * bw + bw / 2, h - 22); ctx.textAlign = "left";
+    });
+  }
+  function hist(cv, data, origin, bw, color, label) {
+    const { ctx, w, h } = frame(cv);
+    const n = data.length, px = w - 56;
+    // merge bins into pixels for display (max per pixel column)
+    const cols = Math.min(n, Math.floor(px));
+    const col = new Float64Array(cols);
+    for (let i = 0; i < n; i++) { const k = Math.floor((i / n) * cols); if (data[i] > col[k]) col[k] = data[i]; }
+    const max = Math.max(1, ...col) * 1.05;
+    axes(ctx, w, h, DT.fmtTime(origin, 3), DT.fmtTime(origin + n * bw, 3), "counts · max " + DT.fmtInt(Math.round(max / 1.05)) + (cols < n ? " · " + (n / cols).toFixed(1) + " bins per pixel" : ""), label);
+    ctx.beginPath(); ctx.moveTo(48, h - 36);
+    for (let k = 0; k < cols; k++) { const x = 48 + (k / cols) * px, y = h - 36 - (col[k] / max) * (h - 52); ctx.lineTo(x, y); ctx.lineTo(48 + ((k + 1) / cols) * px, y); }
+    ctx.lineTo(48 + px, h - 36); ctx.closePath();
+    ctx.fillStyle = color; ctx.globalAlpha = 0.25; ctx.fill(); ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.stroke();
+  }
+  function lines(cv, series, n, label) {
+    const { ctx, w, h } = frame(cv);
+    const max = Math.max(1, ...series.flatMap((s) => s.ys)) * 1.1;
+    axes(ctx, w, h, "oldest", "newest", "counts per bin · max " + DT.fmtInt(Math.round(max / 1.1)), label);
+    series.forEach((s) => {
+      ctx.strokeStyle = DT.chColor(s.c); ctx.lineWidth = 1.5; ctx.beginPath();
+      const off = n - s.ys.length;
+      s.ys.forEach((v, i) => { const x = 48 + ((off + i) / Math.max(1, n - 1)) * (w - 56), y = h - 36 - (v / max) * (h - 52); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke();
+    });
+  }
+  function heat(cv, m) {
+    const size = Math.min(PH, cv.parentElement.clientWidth);
+    const { ctx, w, h } = DT.canvas(cv, PH);
+    ctx.clearRect(0, 0, w, h);
+    const S = Math.min(h - 46, w - 70), x0 = 52, y0 = 10;
+    let max = 0; for (const v of m.h) if (v > max) max = v;
+    const img = ctx.createImageData(m.n, m.n);
+    const lo = [52, 40, 90], hi = [255, 214, 120];
+    for (let r = 0; r < m.n; r++) for (let c = 0; c < m.n; c++) {
+      const v = m.h[r * m.n + c], f = max ? Math.log1p(v) / Math.log1p(max) : 0, p = ((m.n - 1 - c) * m.n + r) * 4;
+      img.data[p] = v ? lo[0] + f * (hi[0] - lo[0]) : 0; img.data[p + 1] = v ? lo[1] + f * (hi[1] - lo[1]) : 0; img.data[p + 2] = v ? lo[2] + f * (hi[2] - lo[2]) : 0; img.data[p + 3] = v ? 255 : 25;
+    }
+    const off = document.createElement("canvas"); off.width = m.n; off.height = m.n; off.getContext("2d").putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false; ctx.drawImage(off, x0, y0, S, S);
+    ctx.strokeStyle = DT.color("--rule"); ctx.strokeRect(x0, y0, S, S);
+    ctx.fillStyle = DT.color("--muted");
+    const a = -m.off, b = -m.off + m.range;
+    ctx.textAlign = "left"; ctx.fillText(DT.fmtTime(a, 3), x0, y0 + S + 14); ctx.textAlign = "right"; ctx.fillText(DT.fmtTime(b, 3), x0 + S, y0 + S + 14);
+    ctx.textAlign = "center"; ctx.fillText(`x: stop ch ${m.stops[0]} − start`, x0 + S / 2, y0 + S + 30);
+    ctx.save(); ctx.translate(14, y0 + S / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(`y: stop ch ${m.stops[1] ?? m.stops[0]} − start`, 0, 0); ctx.restore();
+    ctx.textAlign = "left"; ctx.fillText("log colour · max " + DT.fmtInt(max), x0 + S + 10, y0 + 12);
+  }
+  function table(cv, m) {
+    const box = document.getElementById("labPlotBox");
+    box.querySelector("canvas").hidden = true;
+    let t = box.querySelector("table");
+    if (!t) { t = document.createElement("table"); t.className = "ttable"; box.appendChild(t); }
+    t.hidden = false;
+    t.innerHTML = `<thead><tr><th>#</th><th class="num">timestamp (ps)</th><th>channel</th><th>type</th></tr></thead><tbody>${m.buf.slice(0, 14).map(([tt, c], i) => `<tr><td>${i}</td><td class="num">${DT.fmtInt(tt)}</td><td class="ch${c}">${c}</td><td class="muted">TimeTag</td></tr>`).join("")}</tbody>`;
+  }
+
+  // ---- lab state --------------------------------------------------------------
+  const tabs = document.getElementById("labTabs");
+  let curM = "Histogram", labM = null, labGen = null, labDone = 0, labTotal = 0, labTimer = null;
+  Object.keys(MEAS).forEach((k) => {
+    const b = document.createElement("button");
+    b.textContent = k; b.setAttribute("role", "tab"); b.dataset.k = k;
+    b.addEventListener("click", () => { curM = k; stopLab(); renderParams(); resetLab(); });
+    tabs.appendChild(b);
+  });
+  const parseList = (s) => s.split(/[\s,]+/).map(Number).filter((n) => n >= 1 && n <= 4);
+  function readParams() {
+    const p = { _dur: +document.getElementById("labDur").value };
+    MEAS[curM].params.forEach(([k]) => {
+      const v = document.getElementById("lp-" + k).value;
+      p[k] = ["channels", "click", "start", "c1", "c2", "stops"].includes(k) ? parseList(v) : Math.round(Number(v));
+    });
+    if (p.binwidth !== undefined) p.binwidth = Math.max(1, p.binwidth || 1);
+    if (p.n !== undefined) p.n = Math.max(1, Math.min(curM === "HistogramND" ? 400 : 20000, p.n || 1));
+    ["click", "start", "c1", "c2"].forEach((k) => { if (p[k] && !p[k].length) p[k] = [1]; });
+    if (p.stops && !p.stops.length) p.stops = [1, 2];
+    if (p.channels && !p.channels.length) p.channels = [1];
+    return p;
+  }
+  function renderParams() {
+    tabs.querySelectorAll("button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.k === curM)));
+    document.getElementById("labParams").innerHTML = MEAS[curM].params.map(([k, label, def]) => `<label class="control">${label}<input type="text" class="mono" id="lp-${k}" value="${def}"></label>`).join("");
+    MEAS[curM].params.forEach(([k]) => document.getElementById("lp-" + k).addEventListener("change", () => { stopLab(); resetLab(); }));
+    document.getElementById("labSem").innerHTML = MEAS[curM].sem;
+    DT.setDepth(DT.level);
+  }
+  function resetLab() {
+    const p = readParams();
+    labM = MEAS[curM].make(p);
+    labGen = stream(11, document.getElementById("labComb").checked);
+    labDone = 0; labTotal = p._dur;
+    document.getElementById("labCode").textContent = MEAS[curM].code(p);
+    const box = document.getElementById("labPlotBox");
+    box.querySelector("canvas").hidden = false;
+    const t = box.querySelector("table"); if (t) t.hidden = true;
+    drawLab();
+  }
+  function drawLab() {
+    const cv = document.getElementById("labCv");
+    MEAS[curM].draw(labM, cv);
+    document.getElementById("labStats").innerHTML = MEAS[curM].stats(labM).map(([v, l, c]) => `<div class="stat"><b${c ? ` class="ch${c}"` : ""}>${v}</b><span>${l}</span></div>`).join("");
+    document.getElementById("labProgress").textContent = `${labDone} of ${labTotal} ms of tag time processed`;
+  }
+  function stopLab() { if (labTimer) cancelAnimationFrame(labTimer); labTimer = null; }
+  function runLab() {
+    const perFrame = Math.max(1, Math.round(labTotal / 60));
+    for (let k = 0; k < perFrame && labDone < labTotal; k++) {
+      const blk = labGen.next().value;
+      labM.process(blk.tags.map((x) => x.t), blk.tags.map((x) => x.c), blk.begin, blk.end);
+      labDone++;
+    }
+    drawLab();
+    if (labDone < labTotal) labTimer = requestAnimationFrame(runLab); else labTimer = null;
+  }
+  document.getElementById("labStart").addEventListener("click", () => { stopLab(); resetLab(); labTimer = requestAnimationFrame(runLab); });
+  document.getElementById("labStop").addEventListener("click", stopLab);
+  document.getElementById("labDur").addEventListener("change", () => { stopLab(); resetLab(); });
+  document.getElementById("labComb").addEventListener("change", () => { stopLab(); resetLab(); });
+  renderParams(); resetLab();
+  labTimer = requestAnimationFrame(runLab);
+  DT.onResize(drawLab); DT.onTheme(drawLab);
+})();
+</script>
+</body>
+</html>

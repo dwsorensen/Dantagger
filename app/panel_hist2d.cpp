@@ -2,6 +2,13 @@
 // the first click on each axis' STOP channel after it, shown as a heatmap
 // with the TDC Control app's 2D page features (log colour, colour maps,
 // hover readout, display merging, the 1D projection at an angle, CSV).
+//
+// Zoom (user, 2026-10-22): with auto-fit on, dragging a rectangle on the map
+// re-measures that region with the same number of bins: new bin widths
+// (span / bins, at least 1 ps) and the STOP channels' input delays moved so
+// the rectangle's corner becomes the origin.  The axes still run from 0 (the
+// delays are not subtracted).  Back / Reset zoom restore the bin widths and
+// delays.  The delays are the shared ones, so other panels move too.
 
 #include "panels.hpp"
 
@@ -90,7 +97,8 @@ protected:
                                ui::fmt_count(kMaxBins).c_str());
         ImGui::PushTextWrapPos(0);
         ui::dim_text("At most %d bins per axis and %s in all. To move a peak into the window, give the START channel an "
-                     "input delay (Channels).", kMaxBinsPerAxis, ui::fmt_count(kMaxBins).c_str());
+                     "input delay (Channels), or drag a rectangle on the map to zoom.", kMaxBinsPerAxis,
+                     ui::fmt_count(kMaxBins).c_str());
         ImGui::PopTextWrapPos();
     }
 
@@ -109,6 +117,10 @@ protected:
     }
 
     void view_ui(AppContext& ctx) override {
+        if (zoom_restart_ && ctx.dev.idle()) {   // the zoom's delays are in the tagger: measure again
+            zoom_restart_ = false;
+            start(ctx, true);
+        }
         if (data_.empty()) {
             ui::dim_text("Start to fill the 2D histogram (%d × %d bins).", edit_.n_x, edit_.n_y);
             return;
@@ -141,7 +153,26 @@ protected:
         ui::help("Colours by log10(1 + counts), so faint structure shows next to a strong peak.");
         ImGui::SameLine(0, 18);
         ImGui::Checkbox("auto-fit", &autofit_);
-        ui::help("Keeps the axes on the full range; switch off to zoom and pan with the mouse.");
+        ui::help("Keeps the axes on the full range. Drag a rectangle on the map to measure that region again with the "
+                 "same number of bins: the bin widths shrink to fit (at least 1 ps) and the STOP channels' input delays "
+                 "move its corner to the origin (shared delays: other panels on those channels move too; a running "
+                 "measurement restarts and its counts are cleared). Switch off to zoom and pan the view only.");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(zoom_back_.empty());
+        const bool back = ImGui::Button("Back");
+        ui::probe("h2back_" + std::to_string(id()));
+        if (back) {
+            const ZoomStep z = zoom_back_.back();
+            zoom_back_.pop_back();
+            apply_zoom(ctx, z);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset zoom")) {
+            const ZoomStep z = zoom_back_.front();
+            zoom_back_.clear();
+            apply_zoom(ctx, z);
+        }
+        ImGui::EndDisabled();
         ui::toolbar_next(100 + ImGui::CalcTextSize("colours").x);
         ImGui::SetNextItemWidth(100);
         ImGui::Combo("colours", &colormap_, kMapNames, 5);
@@ -224,7 +255,7 @@ protected:
         const float map_w = ImGui::GetContentRegionAvail().x - bar_w - gap - (projection_ ? proj_w + gap : 0.0f);
         const double x1 = static_cast<double>(bwx_) * cols_ * mx_, y1 = static_cast<double>(bwy_) * rows_ * my_;
         ImPlot::PushColormap(cmap);
-        if (ImPlot::BeginPlot("##hist2d", ImVec2(map_w, plot_h), ImPlotFlags_NoLegend)) {
+        if (ImPlot::BeginPlot("##hist2d", ImVec2(map_w, plot_h), ImPlotFlags_NoLegend | (autofit_ ? ImPlotFlags_NoBoxSelect : 0))) {
             char xlabel[64], ylabel[64];
             std::snprintf(xlabel, sizeof(xlabel), "ch %d - ch %d (%s)", sx_, start_, ui::kUnits[unit]);
             std::snprintf(ylabel, sizeof(ylabel), "ch %d - ch %d (%s)", sy_, start_, ui::kUnits[unit]);
@@ -235,7 +266,10 @@ protected:
             if (cols_ > 0 && rows_ > 0) {
                 ImPlot::PlotHeatmap("counts", cells_.data(), rows_, cols_, 0, vmax, nullptr, ImPlotPoint(0, 0),
                                     ImPlotPoint(x1 * scale, y1 * scale));
-                if (ImPlot::IsPlotHovered()) {   // the cell under the mouse
+                ui::g_probes["h2plot_" + std::to_string(id())] = {ImPlot::GetPlotPos(), ImVec2(ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x,
+                                                                                             ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y)};
+                if (autofit_) zoom_drag(ctx, range_x, range_y, scale);
+                if (ImPlot::IsPlotHovered() && !dragging_) {   // the cell under the mouse
                     const ImPlotPoint mp = ImPlot::GetPlotMousePos();
                     const double cw = x1 / cols_, ch = y1 / rows_;
                     const int c = static_cast<int>(std::floor(mp.x / scale / cw));
@@ -319,7 +353,9 @@ protected:
                 {"peak_x_ps", peak_x_ + 0.5 * static_cast<double>(bwx_)}, {"peak_y_ps", peak_y_ + 0.5 * static_cast<double>(bwy_)},
                 {"starts", static_cast<double>(stats_.starts)}, {"abandoned", static_cast<double>(stats_.abandoned)},
                 {"outside", static_cast<double>(stats_.outside)}, {"proj_deg", proj_deg_},
-                {"proj_total", proj_.total}};
+                {"proj_total", proj_.total}, {"bw_x_ps", static_cast<double>(bwx_)}, {"bw_y_ps", static_cast<double>(bwy_)},
+                {"n_x", static_cast<double>(nx_)}, {"n_y", static_cast<double>(ny_)}, {"zoom_depth", static_cast<double>(zoom_back_.size())},
+                {"zoom_pending", zoom_restart_ ? 1.0 : 0.0}};
     }
     std::string csv_key() const override { return "h2" + std::to_string(id()); }
 
@@ -351,6 +387,75 @@ protected:
     }
 
 private:
+    // What a zoom changed: the bin widths and the input delays of the two STOP channels.
+    struct ZoomStep {
+        double bw_x, bw_y;
+        int stop_x, stop_y;
+        std::int64_t delay_x, delay_y;
+    };
+
+    // Left drag on the map (auto-fit on): the rectangle, clamped to the window, then the zoom on release.
+    void zoom_drag(AppContext& ctx, double range_x, double range_y, double scale) {
+        if (!dragging_ && ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            dragging_ = true;
+            drag_from_ = ImPlot::GetPlotMousePos();
+        }
+        if (!dragging_) return;
+        const ImPlotPoint to = ImPlot::GetPlotMousePos();
+        const double ax = std::clamp(drag_from_.x, 0.0, range_x * scale), bx = std::clamp(to.x, 0.0, range_x * scale);
+        const double ay = std::clamp(drag_from_.y, 0.0, range_y * scale), by = std::clamp(to.y, 0.0, range_y * scale);
+        const ImVec2 pa = ImPlot::PlotToPixels(ax, ay), pb = ImPlot::PlotToPixels(bx, by);
+        const ImVec2 lo(std::min(pa.x, pb.x), std::min(pa.y, pb.y)), hi(std::max(pa.x, pb.x), std::max(pa.y, pb.y));
+        ImPlot::PushPlotClipRect();
+        ImPlot::GetPlotDrawList()->AddRectFilled(lo, hi, IM_COL32(255, 255, 255, 40));
+        ImPlot::GetPlotDrawList()->AddRect(lo, hi, IM_COL32(255, 255, 255, 220), 0, 0, 1.5f);
+        ImPlot::PopPlotClipRect();
+        const double x0 = std::min(ax, bx) / scale, x1 = std::max(ax, bx) / scale;
+        const double y0 = std::min(ay, by) / scale, y1 = std::max(ay, by) / scale;
+        const bool big = hi.x - lo.x >= 4 && hi.y - lo.y >= 4;   // smaller: a click, not a zoom
+        if (big)
+            ImGui::SetTooltip("x %s ... %s\ny %s ... %s\nrelease to measure with %d × %d bins", ui::fmt_time_ps(x0).c_str(),
+                              ui::fmt_time_ps(x1).c_str(), ui::fmt_time_ps(y0).c_str(), ui::fmt_time_ps(y1).c_str(), nx_, ny_);
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) return;
+        dragging_ = false;
+        if (big) zoom_to(ctx, x0, x1, y0, y1);
+    }
+
+    // The region x0..x1 × y0..y1 (ps, in the shown window) becomes the window: same channels and bin counts.
+    void zoom_to(AppContext& ctx, double x0, double x1, double y0, double y1) {
+        const auto& d = ctx.dev.channels().delay_ps;
+        zoom_back_.push_back({static_cast<double>(bwx_), static_cast<double>(bwy_), sx_, sy_,
+                              d[static_cast<std::size_t>(sx_ - 1)], d[static_cast<std::size_t>(sy_ - 1)]});
+        // An axis whose STOP is the START channel cannot move; x STOP = y STOP moves both axes together.
+        double shift_x = sx_ == start_ ? 0 : x0, shift_y = sy_ == start_ ? 0 : y0;
+        if (sx_ == sy_ && sx_ != start_) shift_x = shift_y = std::min(x0, y0);
+        const auto dx = static_cast<std::int64_t>(std::llround(shift_x)), dy = static_cast<std::int64_t>(std::llround(shift_y));
+        edit_.start = start_;
+        edit_.stop_x = sx_;
+        edit_.stop_y = sy_;
+        edit_.n_x = nx_;
+        edit_.n_y = ny_;
+        const ZoomStep z{std::max(1.0, std::round((x1 - static_cast<double>(dx)) / nx_)),
+                         std::max(1.0, std::round((y1 - static_cast<double>(dy)) / ny_)), sx_, sy_,
+                         d[static_cast<std::size_t>(sx_ - 1)] - dx, d[static_cast<std::size_t>(sy_ - 1)] - dy};
+        apply_zoom(ctx, z);
+    }
+
+    // Bin widths and delays to `z`; a running measurement stops and starts again (cleared) once the delays are applied.
+    void apply_zoom(AppContext& ctx, const ZoomStep& z) {
+        edit_.bw_x = z.bw_x;
+        edit_.bw_y = z.bw_y;
+        const bool restart = running() || zoom_restart_;
+        if (running()) stop(ctx);
+        const auto& d = ctx.dev.channels().delay_ps;
+        if (d[static_cast<std::size_t>(z.stop_x - 1)] != z.delay_x) ctx.dev.set_delay(z.stop_x, z.delay_x);
+        if (z.stop_y != z.stop_x && d[static_cast<std::size_t>(z.stop_y - 1)] != z.delay_y) ctx.dev.set_delay(z.stop_y, z.delay_y);
+        zoom_restart_ = restart;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "2D zoom: bins of %s × %s", ui::fmt_time_ps(z.bw_x).c_str(), ui::fmt_time_ps(z.bw_y).c_str());
+        log(ctx, Level::info, buf);
+    }
+
     // Display cells (merged bins): values_ row-major, row 0 = smallest y.
     void build_cells() {
         mx_ = (nx_ + kMaxCellsPerAxis - 1) / kMaxCellsPerAxis;
@@ -447,6 +552,11 @@ private:
     std::uint64_t proj_version_{~0ULL};
     float proj_done_deg_{1000};
     std::vector<double> pxs_, pys_;
+    // zoom
+    std::vector<ZoomStep> zoom_back_;   // front: before the first zoom
+    bool zoom_restart_{false};          // start again once the device has applied the delays
+    bool dragging_{false};
+    ImPlotPoint drag_from_;
 };
 
 }  // namespace

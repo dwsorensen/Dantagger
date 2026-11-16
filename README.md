@@ -116,7 +116,10 @@ Every panel has:
   - **2D Histogram**: the TDC Control app's 2D page: heatmap, log colour,
     colour maps, hover readout, display merging, starts / stops / pairs /
     outside / abandoned, the 1D projection at any angle (slider, arrows,
-    keys) with its own CSV.
+    keys) with its own CSV. Drag a rectangle on the map (auto-fit on) to
+    measure that region again with the same bin counts: new bin widths (at
+    least 1 ps) and the STOP channels' input delays (shared, so other panels
+    on those channels move too); the axes stay 0 to max. Back / Reset zoom.
   - **TimeTagStream**: *Start streaming* writes the raw stream of the chosen
     channels for *Stream for* seconds of FPGA time (or until Stop), with the
     channel table open for trigger and hysteresis; shows the recording, the
@@ -176,8 +179,8 @@ README; `docs/SWABIAN_API_USAGE.md`, `docs/GAMEPLAN.md`), with these changes
   tomography flow test).
 
 `import TimeTagger` → Dantagger: `switch/` and `tools/install_timetagger_hook.py`
-point at *this* package. The SDE venv's switch still points at
-`SDE/Dantagger` until it is reinstalled from here (not done; on request).
+point at *this* package. The SDE venv's switch was reinstalled from here on
+2026-11-05, and `SDE/Dantagger` was removed.
 
 ## USB buffering
 

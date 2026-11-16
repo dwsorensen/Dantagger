@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 python/Dantagger/_dantagger*.so
 .pytest_cache/
+# Browser profile and screenshots from checking the explainer pages
+artifacts/.check/

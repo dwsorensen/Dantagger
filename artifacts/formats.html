@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bits on the Wire · Dantagger</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .bitgrid-box { overflow-x: auto; padding-bottom: 4px; }
+  .bitgrid { display: grid; gap: 2px; min-width: 640px; }
+  .bitgrid.w64 { grid-template-columns: repeat(32, minmax(0, 1fr)); }
+  .bitgrid.w32 { grid-template-columns: repeat(32, minmax(0, 1fr)); }
+  .bitcell { height: 30px; border-radius: 2px; display: grid; place-items: center; font-family: var(--f-mono); font-size: 0.74rem; background: var(--sunk); color: var(--muted); cursor: pointer; position: relative; border: 0; padding: 0; }
+  .bitcell.one { color: var(--ink); font-weight: 700; }
+  .bitcell .bi { position: absolute; top: 1px; left: 2px; font-size: 0.5rem; opacity: 0.6; font-weight: 400; }
+  .bitcell.hot { outline: 2px solid var(--ink); outline-offset: -1px; }
+  .fieldrow { display: grid; grid-template-columns: 6.5rem 8rem minmax(0, 1fr) 9rem; gap: 0.6rem; align-items: center; padding: 0.3rem 0; border-bottom: 1px solid var(--rule); font-size: 0.9rem; }
+  @media (max-width: 700px) { .fieldrow { grid-template-columns: 5rem minmax(0, 1fr) 7rem; } .fieldrow .fdesc { grid-column: 1 / -1; } }
+  .fieldrow .fbits { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+  .fieldrow input { width: 100%; font-family: var(--f-mono); }
+  .fieldrow .fname { font-weight: 600; display: flex; gap: 0.4rem; align-items: center; }
+  .fieldrow .fdesc { color: var(--muted); font-size: 0.85rem; }
+  .fieldrow.hot { background: var(--sunk); }
+  .presets { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .hexin { font-family: var(--f-mono); font-size: 1rem; width: min(100%, 22ch); }
+
+  /* pack / expand */
+  .pack { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1fr); gap: 1rem; }
+  @media (max-width: 900px) { .pack { grid-template-columns: 1fr; } }
+  .plist { display: grid; gap: 2px; font-family: var(--f-mono); font-size: 0.76rem; max-height: 420px; overflow: auto; align-content: start; }
+  .pitem { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 0.5rem; padding: 0.15rem 0.4rem; border-radius: 3px; border-left: 3px solid var(--c, var(--rule)); background: var(--bg); cursor: default; }
+  .pitem.hot { background: var(--sunk); outline: 1px solid var(--ink); }
+  .pitem span:last-child { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* frame map */
+  .fmap { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); gap: 1px; max-width: 760px; }
+  .fmap i { aspect-ratio: 1; border-radius: 1px; background: var(--sunk); cursor: pointer; }
+  .fmap i.hot { outline: 2px solid var(--ink); outline-offset: 0; }
+  .fword { font-family: var(--f-mono); font-size: 0.85rem; min-height: 3.2em; }
+
+  .search { width: min(100%, 360px); }
+  tr.hidden-row { display: none; }
+  td code { white-space: nowrap; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18h6l2-12 2 12h10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 21v-3M14 21v-3M18 21v-3M6 21v-3" stroke="currentColor" stroke-width="1.2"/></svg>
+      Dantagger
+    </a>
+    <nav class="nav" aria-label="Pages">
+      <a href="index.html"><span class="lvl">01</span>End to end</a>
+      <a href="fpga.html"><span class="lvl">02</span>Inside the FPGA</a>
+      <a href="host.html"><span class="lvl">03</span>Inside the host</a>
+      <a href="formats.html" aria-current="page"><span class="lvl">04</span>Bits on the wire</a>
+    </nav>
+    <div class="depth"><span>Detail</span>
+      <div class="seg" role="group" aria-label="Level of detail">
+        <button data-level="1" aria-pressed="true">Intuition</button><button data-level="2" aria-pressed="false">Mechanism</button><button data-level="3" aria-pressed="false">Exact</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="eyebrow c-link">TDC_Firmware PROTOCOL.md · release 3</div>
+    <h1>Bits on the wire</h1>
+    <p class="lede">Everything the FPGA and the PC say to each other comes in 4096-byte frames. Streamed events are 64-bit <b>records</b>, or, in release 3's compact runs, 32-bit <b>words</b>. Type any value below and see it decoded field by field, or edit a field and see the bits change.</p>
+    <p class="muted" style="max-width:72ch">All values are little-endian. Words are numbered from the start of the frame: word 0 is bytes 0–3.</p>
+  </div>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="record">
+    <div class="chapter-head">
+      <div class="eyebrow">The 64-bit record</div>
+      <h2>One event, or one marker</h2>
+      <p class="muted" style="max-width:72ch">Bit 63 says which. An <b>event</b> is one GPX2 result: channel, the low 16 bits of the FPGA's coarse time, the reference index and the stop result. A <b>marker</b> carries the full 48-bit coarse time and marks the start or end of a run, a clock tick, or dropped events. Records are what the decoder, the raw recordings and <code>tdcctl</code> files all use. Compact runs are expanded back into them on arrival.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Record (hex)<input type="text" id="r64" class="hexin" spellcheck="false" autocomplete="off"></label>
+        <div class="presets" id="r64Presets"></div>
+      </div>
+      <div class="bitgrid-box"><div class="bitgrid w64" id="r64Grid"></div></div>
+      <div id="r64Fields"></div>
+      <div class="note" data-depth="2"><b>Why only 16 coarse bits in an event?</b> A TIME marker with the full 48 bits comes whenever the low 14 bits wrap, every 131 µs, and no record is more than 8 cycles older than the one before it. So consecutive records are never more than 2¹⁵ ticks apart, and the host unwraps the 16 bits as a signed difference from the last record it saw.</div>
+      <div class="note" data-depth="3">Decoder (<code>RecordDecoder::feed</code>): <code>diff = int16(coarse_low − (coarse &amp; 0xFFFF)); coarse += diff</code>. Then <code>t_cand = (ref × divisions + stop) × lsb</code>. An event with stop ≥ divisions (125 000) is counted as corrupt and skipped. An OVERFLOW marker becomes three Swabian tags: OverflowBegin at the watermark, then MissedEvents (with the count) and OverflowEnd at the marker's time.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="compact">
+    <div class="chapter-head">
+      <div class="eyebrow">Release 3 compact words</div>
+      <h2>Half the size, same information</h2>
+      <p class="muted" style="max-width:72ch">In a compact run each event is <b>one 32-bit word</b>: an 18-bit stop result, the channel, and the low 12 bits of the reference index. The upper 12 index bits change slowly, so they travel in an occasional EPOCH word. Markers become three words. Words whose top six bits are all ones are reserved for everything that is not an event.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Word (hex)<input type="text" id="w32" class="hexin" spellcheck="false" autocomplete="off"></label>
+        <div class="presets" id="w32Presets"></div>
+      </div>
+      <div class="bitgrid-box"><div class="bitgrid w32" id="w32Grid"></div></div>
+      <div id="w32Fields"></div>
+      <div class="note" data-depth="2">An event carries no coarse time at all. The host gives it the coarse time of the last marker, which can be up to one TIME period (131 µs) early. The decoder allows for that in its wrap budget and its watermark margin. With a 24-bit index (2.1 s per lap) this costs nothing.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="pack">
+    <div class="chapter-head">
+      <div class="eyebrow">Packing and expanding</div>
+      <h2>Records → words → records</h2>
+      <p class="muted" style="max-width:72ch">A short run as the FPGA's queue holds it (left), as the compact packer sends it (middle), and as the PC's expander rebuilds it (right). Hover a line to see where it went. Events keep every bit except the coarse time, which becomes the last marker's.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <button class="btn" id="packNew">Another run</button>
+        <label class="control">Events <output id="packNOut"></output><input type="range" id="packN" min="4" max="40" value="14"></label>
+      </div>
+      <div class="pack">
+        <div><div class="bench-title" style="font-size:1rem">FPGA queue · 64-bit records</div><div class="plist" id="pkIn"></div></div>
+        <div><div class="bench-title" style="font-size:1rem">USB payload · 32-bit words</div><div class="plist" id="pkWords"></div></div>
+        <div><div class="bench-title" style="font-size:1rem">PC · expanded records</div><div class="plist" id="pkOut"></div></div>
+      </div>
+      <div class="stat-row" id="pkStats"></div>
+      <div class="note" data-depth="3">Rules (PROTOCOL.md 3.4): an EPOCH word comes before an event whenever bits 23:12 of its index differ from the last EPOCH of the run (always before the run's first event), and only then. The EPOCH and its event are in the same frame. A marker's three words are always in one frame. A frame payload is always 1007 words, with PAD (0xFFFFFFFF) after the last record. The host-side code is <code>tdcctl::CompactExpander</code>. <code>CompactPacker</code> is the FPGA's packer in software, checked word for word against 33 compact frames from the RTL simulation.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="frame">
+    <div class="chapter-head">
+      <div class="eyebrow">The frame</div>
+      <h2>4096 bytes, word by word</h2>
+      <p class="muted" style="max-width:72ch">Every frame in both directions has the same envelope: a 16-word header, 1007 payload words, and a CRC. Each square below is one 32-bit word. Hover or tap one.</p>
+    </div>
+    <div class="bench">
+      <div class="controls">
+        <label class="control">Frame
+          <select id="fmKind">
+            <option value="compact">DATA, compact (1007 words)</option>
+            <option value="data64">DATA, 64-bit records (503 records)</option>
+            <option value="data64p">DATA, 64-bit, flushed after 1 ms (120 records)</option>
+            <option value="command">COMMAND (GPX_CONFIGURE)</option>
+            <option value="response">RESPONSE (113 fields)</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid cols-2" style="align-items:start">
+        <div class="fmap" id="fmap" role="group" aria-label="1024 words of a frame"></div>
+        <div style="display:grid;gap:.7rem">
+          <div class="fword" id="fword"></div>
+          <div class="legend" id="fmLegend"></div>
+          <div class="scroll-x" data-depth="2">
+            <table>
+              <thead><tr><th>Word</th><th>Header field</th></tr></thead>
+              <tbody>
+                <tr><td>0–1</td><td>magic <code>AU2FT601</code></td></tr>
+                <tr><td>2</td><td>version 1 (bits 15:0), type (31:16): 1 DATA, 2 COMMAND, 3 RESPONSE</td></tr>
+                <tr><td>3</td><td>frame length, 4096</td></tr>
+                <tr><td>4–5</td><td>run ID</td></tr>
+                <tr><td>6–7</td><td>DATA: sequence in the run · COMMAND/RESPONSE: transaction ID</td></tr>
+                <tr><td>8–9</td><td>DATA: records sent in this run before this frame (compact: non-PAD words)</td></tr>
+                <tr><td>10</td><td>COMMAND/RESPONSE: opcode · DATA: record format, 1 = 64-bit, 2 = compact</td></tr>
+                <tr><td>11</td><td>0</td></tr>
+                <tr><td>12</td><td>valid payload bytes</td></tr>
+                <tr><td>13</td><td>RESPONSE: status · otherwise 0</td></tr>
+                <tr><td>14–15</td><td>DATA: FT-clock timestamp when the frame was built</td></tr>
+                <tr><td>1023</td><td>CRC-32/ISO-HDLC over bytes 0–4091</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="note" data-depth="3">The FPGA silently drops (and counts in field 4) any COMMAND frame with a bad magic, version or type, a length other than 4096, a nonzero offset, seed, flags or timestamp word, a byte-enable other than 1111 on any word, a CRC error, or a partial frame left idle for 10 ms. Only one command may be outstanding, and every accepted frame gets exactly one RESPONSE. A DATA frame is built when 503 records (compact: 1007 words) are waiting, when records have waited 1 ms, or at once while a run ends.</div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="commands">
+    <div class="chapter-head">
+      <div class="eyebrow">Reference</div>
+      <h2>Commands</h2>
+      <p class="muted" style="max-width:72ch">Header word 10 is the opcode, word 12 the payload length in bytes, and the payload starts at word 16. Every payload word past the valid length must be zero.</p>
+    </div>
+    <div class="scroll-x">
+      <table>
+        <thead><tr><th>Opcode</th><th>Name</th><th class="num">Bytes</th><th>Payload</th><th>While streaming</th></tr></thead>
+        <tbody id="cmdBody"></tbody>
+      </table>
+    </div>
+    <div class="grid cols-2" data-depth="2">
+      <div class="scroll-x">
+        <table>
+          <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>0 OK</td><td>done</td></tr>
+            <tr><td>1 BAD_COMMAND</td><td>unknown opcode</td></tr>
+            <tr><td>2 BAD_ARGUMENT</td><td>bad length, value or nonzero padding; nothing is done</td></tr>
+            <tr><td>3 BUSY</td><td>not allowed while streaming; nothing is done</td></tr>
+            <tr><td>5 DEVICE_ERROR</td><td>it ran, but a device NACKed, a readback did not match, or a bus timed out</td></tr>
+            <tr><td>6 NOT_READY</td><td>START: GPX2 not measuring with a verified configuration, LCLKIN off, clocks not locked, or (compact) the format does not allow compact records</td></tr>
+          </tbody>
+        </table>
+        <p class="muted" style="font-size:.85rem;margin-top:.5rem">When several apply, the first in this order wins: BAD_COMMAND, BAD_ARGUMENT, BUSY, NOT_READY, DEVICE_ERROR.</p>
+      </div>
+      <div class="prose" data-depth="3">
+        <h4>GPX_CONFIGURE board rules</h4>
+        <p>The FPGA refuses the command (BAD_ARGUMENT, nothing sent to the chip) unless:</p>
+        <ul>
+          <li>register 0 bit 4 <code>PIN_ENA_REFCLK</code> = 1 (REFCLK comes from the LMK1D1204);</li>
+          <li>register 1: <code>HIGH_RESOLUTION</code> ≠ 3, <code>CHANNEL_COMBINE</code> ≠ 3;</li>
+          <li>registers 3–5: 1 ≤ <code>REFCLK_DIVISIONS</code> ≤ 2^stop_bits − 1;</li>
+          <li>register 7 bit 7 <code>REFCLK_BY_XOSC</code> = 0;</li>
+          <li>the fixed bits: register 5 bits 7:4 = 0, register 6 bits 7:5 = 110 and 3:0 = 0, register 7 bit 6 = 1 and 3:0 = 0011, registers 8–15 = A1 13 00 0A CC CC F1 7D, register 16 = 0.</li>
+        </ul>
+        <p>Then: power the chip's logic off and on (0x30), write (0x80), read back and compare all 17 bytes, INIT (0x18) only if they match, and read back again.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section class="chapter" id="status">
+    <div class="chapter-head">
+      <div class="eyebrow">Reference</div>
+      <h2>The response's 113 fields</h2>
+      <p class="muted" style="max-width:72ch">Every response carries the board's whole state: 113 little-endian 32-bit fields at words 16–128. Search by number or word.</p>
+    </div>
+    <input type="text" class="search" id="fieldSearch" placeholder="Search: temperature, dropped, 61, phase…" aria-label="Search response fields">
+    <div class="scroll-x">
+      <table>
+        <thead><tr><th class="num">Field</th><th class="num">Word</th><th>Content</th></tr></thead>
+        <tbody id="fieldBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="next-page">
+    <a href="host.html">← Inside the host<small>Threads, decoding, measurements</small></a>
+    <a href="index.html">Back to the start →<small>End to end</small></a>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+(function () {
+  const hex = (v, n) => "0x" + v.toString(16).toUpperCase().padStart(n, "0");
+  const COL = { kind: "--ink", ch: "--ch2", zero: "--muted", coarse: "--fpga", ref: "--board", stop: "--host", type: "--ink", info: "--warn", pfx: "--link" };
+
+  // ===========================================================================
+  // generic field inspector
+  // ===========================================================================
+  function inspector({ width, input, grid, fields, presets, layoutOf, initial }) {
+    let value = initial;
+    const W = BigInt(width);
+    const mask = (1n << W) - 1n;
+    const get = (hi, lo) => (value >> BigInt(lo)) & ((1n << BigInt(hi - lo + 1)) - 1n);
+    const set = (hi, lo, v) => { const m = ((1n << BigInt(hi - lo + 1)) - 1n) << BigInt(lo); value = (value & ~m) | ((BigInt(v) << BigInt(lo)) & m); };
+    let hotField = -1;
+    presets.forEach(([label, v]) => {
+      const b = document.createElement("button");
+      b.className = "btn"; b.textContent = label;
+      b.addEventListener("click", () => { value = v; render(); });
+      document.getElementById(input + "Presets").appendChild(b);
+    });
+    const inp = document.getElementById(input);
+    inp.addEventListener("input", () => {
+      const s = inp.value.trim().replace(/^0x/i, "").replace(/[_\s]/g, "");
+      if (/^[0-9a-f]+$/i.test(s) && s.length <= width / 4) { value = BigInt("0x" + s) & mask; render(true); }
+    });
+    function render(fromInput) {
+      const layout = layoutOf(value, get);
+      if (!fromInput) inp.value = hex(value, width / 4);
+      // bits, MSB first, in rows of 32
+      const g = document.getElementById(grid);
+      g.innerHTML = "";
+      for (let b = width - 1; b >= 0; b--) {
+        const fi = layout.findIndex((f) => b <= f.hi && b >= f.lo);
+        const f = layout[fi];
+        const one = ((value >> BigInt(b)) & 1n) === 1n;
+        const cell = document.createElement("button");
+        cell.className = "bitcell" + (one ? " one" : "") + (fi === hotField ? " hot" : "");
+        cell.innerHTML = `<span class="bi">${b}</span>${one ? 1 : 0}`;
+        cell.style.background = `color-mix(in srgb, var(${COL[f.k]}) ${one ? 30 : 13}%, var(--panel))`;
+        cell.title = `bit ${b}: ${f.name}`;
+        cell.setAttribute("aria-label", `bit ${b}, ${one ? 1 : 0}, ${f.name}; click to flip`);
+        cell.addEventListener("click", () => { value ^= 1n << BigInt(b); render(); });
+        cell.addEventListener("mouseenter", () => { hotField = fi; highlight(); });
+        cell.addEventListener("mouseleave", () => { hotField = -1; highlight(); });
+        g.appendChild(cell);
+      }
+      const fe = document.getElementById(fields);
+      fe.innerHTML = `<div class="fieldrow" style="color:var(--muted);font-size:.8rem"><span>bits</span><span>value</span><span class="fdesc">field</span><span>meaning</span></div>` +
+        layout.map((f, i) => {
+          const v = get(f.hi, f.lo);
+          const editable = f.edit !== false;
+          return `<div class="fieldrow" data-fi="${i}"><span class="fbits">${f.hi === f.lo ? f.hi : f.hi + ":" + f.lo}</span>
+            ${editable ? `<input type="text" data-fi="${i}" value="${v.toString()}" aria-label="${f.name}">` : `<span class="mono">${v.toString()}</span>`}
+            <span class="fdesc"><span class="fname"><span class="sw" style="background:var(${COL[f.k]})"></span>${f.name}</span>${f.desc ? f.desc : ""}</span>
+            <span class="mono" style="font-size:.8rem">${f.show ? f.show(v) : hex(v, Math.ceil((f.hi - f.lo + 1) / 4))}</span></div>`;
+        }).join("");
+      fe.querySelectorAll("input").forEach((el) => el.addEventListener("change", () => {
+        const f = layout[+el.dataset.fi];
+        let v; try { v = BigInt(el.value.trim()); } catch (e) { return; }
+        const max = (1n << BigInt(f.hi - f.lo + 1)) - 1n;
+        if (v < 0n) v = 0n; if (v > max) v = max;
+        set(f.hi, f.lo, v); render();
+      }));
+      fe.querySelectorAll(".fieldrow[data-fi]").forEach((row) => {
+        row.addEventListener("mouseenter", () => { hotField = +row.dataset.fi; highlight(); });
+        row.addEventListener("mouseleave", () => { hotField = -1; highlight(); });
+      });
+      DT.setDepth(DT.level);
+    }
+    function highlight() {
+      const layout = layoutOf(value, get);
+      document.querySelectorAll(`#${grid} .bitcell`).forEach((c, idx) => {
+        const b = width - 1 - idx;
+        const fi = layout.findIndex((f) => b <= f.hi && b >= f.lo);
+        c.classList.toggle("hot", fi === hotField && hotField >= 0);
+      });
+      document.querySelectorAll(`#${fields} .fieldrow[data-fi]`).forEach((r) => r.classList.toggle("hot", +r.dataset.fi === hotField));
+    }
+    render();
+  }
+
+  // ===========================================================================
+  // 64-bit records
+  // ===========================================================================
+  const MK = ["START", "TIME", "OVERFLOW", "END", "type 4 (unused)", "type 5 (unused)", "type 6 (unused)", "type 7 (unused)"];
+  const ev64 = (ch, coarse, ref, stop) => (BigInt(ch) << 61n) | ((BigInt(coarse) & 0xFFFFn) << 44n) | (BigInt(ref) << 20n) | BigInt(stop);
+  const mk64 = (type, info, coarse) => (1n << 63n) | (BigInt(type) << 60n) | (BigInt(info) << 48n) | BigInt(coarse);
+  inspector({
+    width: 64, input: "r64", grid: "r64Grid", fields: "r64Fields",
+    initial: ev64(1, 0x8F1C, 3818994, 61234),
+    presets: [["Event", ev64(1, 0x8F1C, 3818994, 61234)], ["START", mk64(0, 0, 1234567890)], ["TIME", mk64(1, 0, 1234583551)], ["OVERFLOW", mk64(2, 37, 1234590002)], ["END (window)", mk64(3, 1, 1359567890)]],
+    layoutOf: (v, get) => get(63, 63) === 0n ? [
+      { hi: 63, lo: 63, k: "kind", name: "kind", desc: " · 0 = event", show: () => "event", edit: true },
+      { hi: 62, lo: 61, k: "ch", name: "channel", desc: " · STOP1–4", show: (x) => "channel " + (Number(x) + 1) },
+      { hi: 60, lo: 60, k: "zero", name: "zero", show: (x) => (x ? "must be 0" : "0") },
+      { hi: 59, lo: 44, k: "coarse", name: "coarse time, low 16 bits", desc: " · 8 ns ticks", show: (x) => hex(x, 4) },
+      { hi: 43, lo: 20, k: "ref", name: "reference index", desc: " · 125 ns ticks", show: (x) => DT.fmtTime(Number(x) * 125000, 6) },
+      { hi: 19, lo: 0, k: "stop", name: "stop result", desc: " · ps into the tick", show: (x) => (x >= 125000n ? "≥ 125 000: corrupt" : DT.fmtInt(Number(x)) + " ps") },
+    ] : [
+      { hi: 63, lo: 63, k: "kind", name: "kind", desc: " · 1 = marker", show: () => "marker" },
+      { hi: 62, lo: 60, k: "type", name: "marker type", show: (x) => MK[Number(x)] },
+      { hi: 59, lo: 48, k: "info", name: "info", desc: " · OVERFLOW: events dropped (saturates at 4095); END: 1 = window ended", show: (x) => DT.fmtInt(Number(x)) },
+      { hi: 47, lo: 0, k: "coarse", name: "coarse time, 48 bits", desc: " · 8 ns ticks since power-up", show: (x) => (Number(x) * 8e-9).toFixed(6) + " s" },
+    ],
+  });
+
+  // ===========================================================================
+  // compact words
+  // ===========================================================================
+  const evW = (stop, ch, low) => (BigInt(stop) << 14n) | (BigInt(ch) << 12n) | BigInt(low);
+  inspector({
+    width: 32, input: "w32", grid: "w32Grid", fields: "w32Fields",
+    initial: evW(61234, 1, 0x5F2),
+    presets: [["Event", evW(61234, 1, 0x5F2)], ["EPOCH", 0xFC000000n | 0x3A4n], ["HEAD (TIME)", 0xFF000000n | (1n << 21n)], ["HI", 0xFD000000n | 0x49n], ["LO", 0xFE000000n | 0x9AB7FFn], ["PAD", 0xFFFFFFFFn]],
+    layoutOf: (v, get) => {
+      const top = Number(get(31, 24));
+      if (get(31, 26) !== 0x3Fn) return [
+        { hi: 31, lo: 14, k: "stop", name: "stop result (18 bits)", desc: " · event: bits 31:26 are not all ones", show: (x) => DT.fmtInt(Number(x)) + " ps" },
+        { hi: 13, lo: 12, k: "ch", name: "channel", show: (x) => "channel " + (Number(x) + 1) },
+        { hi: 11, lo: 0, k: "ref", name: "reference index, bits 11:0", desc: " · high bits from the last EPOCH", show: (x) => hex(x, 3) },
+      ];
+      if (v === 0xFFFFFFFFn) return [{ hi: 31, lo: 0, k: "pfx", name: "PAD", desc: " · fills the frame after the last record", show: () => "nothing" }];
+      if (top === 0xFC) return [
+        { hi: 31, lo: 24, k: "pfx", name: "EPOCH prefix 0xFC", show: () => "EPOCH" },
+        { hi: 23, lo: 12, k: "zero", name: "zero", show: (x) => (x ? "must be 0" : "0") },
+        { hi: 11, lo: 0, k: "ref", name: "reference index bits 23:12", desc: " · for the events that follow", show: (x) => hex(x, 3) },
+      ];
+      if (top === 0xFD) return [{ hi: 31, lo: 24, k: "pfx", name: "HI prefix 0xFD", show: () => "HI" }, { hi: 23, lo: 0, k: "coarse", name: "coarse time bits 47:24", show: (x) => hex(x, 6) }];
+      if (top === 0xFE) return [{ hi: 31, lo: 24, k: "pfx", name: "LO prefix 0xFE", show: () => "LO" }, { hi: 23, lo: 0, k: "coarse", name: "coarse time bits 23:0", show: (x) => hex(x, 6) }];
+      if (top === 0xFF) return [
+        { hi: 31, lo: 24, k: "pfx", name: "HEAD prefix 0xFF", desc: " · then HI and LO", show: () => "HEAD" },
+        { hi: 23, lo: 21, k: "type", name: "marker type", show: (x) => MK[Number(x)] },
+        { hi: 20, lo: 9, k: "info", name: "info", desc: " · as bits 59:48 of a 64-bit marker", show: (x) => DT.fmtInt(Number(x)) },
+        { hi: 8, lo: 0, k: "zero", name: "zero", show: (x) => (x ? "must be 0" : "0") },
+      ];
+      return [{ hi: 31, lo: 24, k: "pfx", name: "reserved prefix " + hex(BigInt(top), 2), desc: " · not a valid word: the expander rejects the frame", show: () => "invalid" }, { hi: 23, lo: 0, k: "zero", name: "–", show: (x) => hex(x, 6) }];
+    },
+  });
+
+  // ===========================================================================
+  // pack / expand
+  // ===========================================================================
+  let pseed = 5;
+  function makeRun(nEv) {
+    const r = DT.rng(pseed * 977);
+    const recs = [];
+    let coarse = 1234567890, ref = 3818000 + Math.floor(r() * 3000);
+    recs.push({ kind: "m", type: 0, info: 0, coarse });
+    let lastTimeMark = coarse;
+    let added = 0;
+    while (added < nEv) {
+      coarse += 20 + Math.floor(r() * 3000);
+      ref += 4 + Math.floor(r() * 3000 / 15.6);
+      if (Math.floor(coarse / 16384) !== Math.floor(lastTimeMark / 16384)) { recs.push({ kind: "m", type: 1, info: 0, coarse: Math.floor(coarse / 16384) * 16384 - 1 }); lastTimeMark = coarse; }
+      if (r() < 0.05) { recs.push({ kind: "m", type: 2, info: 1 + Math.floor(r() * 30), coarse }); }
+      recs.push({ kind: "e", ch: Math.floor(r() * 4), coarse, ref: ref & 0xFFFFFF, stop: Math.floor(r() * 125000) });
+      added++;
+    }
+    recs.push({ kind: "m", type: 3, info: 0, coarse: coarse + 40 });
+    return recs;
+  }
+  function pack(recs) {
+    const words = []; let epoch = -1;
+    recs.forEach((rc, i) => {
+      if (rc.kind === "e") {
+        const e = rc.ref >> 12;
+        if (e !== epoch) { words.push({ w: (0xFC000000 | e) >>> 0, t: "EPOCH", src: i }); epoch = e; }
+        words.push({ w: ((rc.stop << 14) | (rc.ch << 12) | (rc.ref & 0xFFF)) >>> 0, t: "event", src: i });
+      } else {
+        words.push({ w: (0xFF000000 | (rc.type << 21) | (rc.info << 9)) >>> 0, t: "HEAD", src: i });
+        words.push({ w: (0xFD000000 | Math.floor(rc.coarse / 16777216)) >>> 0, t: "HI", src: i });
+        words.push({ w: (0xFE000000 | (rc.coarse % 16777216)) >>> 0, t: "LO", src: i });
+      }
+    });
+    return words;
+  }
+  function expand(words) {
+    const out = []; let epoch = 0, coarse = 0;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i].w, top = w >>> 24;
+      if ((w >>> 26) !== 0x3F) { out.push({ kind: "e", ch: (w >>> 12) & 3, ref: (epoch << 12) | (w & 0xFFF), stop: w >>> 14, coarse, src: words[i].src, from: [i] }); }
+      else if (top === 0xFC) { epoch = w & 0xFFF; }
+      else if (top === 0xFF) {
+        const hi = words[i + 1].w & 0xFFFFFF, lo = words[i + 2].w & 0xFFFFFF;
+        coarse = hi * 16777216 + lo;
+        out.push({ kind: "m", type: (w >>> 21) & 7, info: (w >>> 9) & 0xFFF, coarse, src: words[i].src, from: [i, i + 1, i + 2] });
+        i += 2;
+      }
+    }
+    return out;
+  }
+  const r64hex = (rc) => rc.kind === "e"
+    ? hex((BigInt(rc.ch) << 61n) | ((BigInt(rc.coarse) & 0xFFFFn) << 44n) | (BigInt(rc.ref) << 20n) | BigInt(rc.stop), 16)
+    : hex((1n << 63n) | (BigInt(rc.type) << 60n) | (BigInt(rc.info) << 48n) | BigInt(rc.coarse), 16);
+  const desc = (rc) => rc.kind === "e" ? `ch ${rc.ch + 1} · ref ${hex(BigInt(rc.ref), 6)} · stop ${rc.stop} · coarse …${(rc.coarse & 0xFFFF).toString(16).toUpperCase()}` : `${MK[rc.type]}${rc.type === 2 ? " " + rc.info : ""} · coarse ${rc.coarse}`;
+  const colorOf = (t, ch) => t === "e" || t === "event" ? `var(--ch${ch + 1})` : t === "EPOCH" ? "var(--board)" : "var(--fpga)";
+  function renderPack() {
+    const n = +document.getElementById("packN").value;
+    document.getElementById("packNOut").textContent = n;
+    const recs = makeRun(n), words = pack(recs), back = expand(words);
+    const inEl = document.getElementById("pkIn"), wEl = document.getElementById("pkWords"), oEl = document.getElementById("pkOut");
+    inEl.innerHTML = recs.map((rc, i) => `<div class="pitem" data-src="${i}" style="--c:${rc.kind === "e" ? `var(--ch${rc.ch + 1})` : "var(--fpga)"}"><span>${r64hex(rc)}</span><span>${desc(rc)}</span></div>`).join("");
+    wEl.innerHTML = words.map((w, i) => `<div class="pitem" data-src="${w.src}" data-w="${i}" style="--c:${w.t === "event" ? `var(--ch${recs[w.src].ch + 1})` : w.t === "EPOCH" ? "var(--board)" : "var(--fpga)"}"><span>${hex(BigInt(w.w), 8)}</span><span>${w.t}</span></div>`).join("");
+    oEl.innerHTML = back.map((rc) => {
+      const orig = recs[rc.src];
+      const changed = rc.kind === "e" && rc.coarse !== orig.coarse;
+      return `<div class="pitem" data-src="${rc.src}" style="--c:${rc.kind === "e" ? `var(--ch${rc.ch + 1})` : "var(--fpga)"}"><span>${r64hex(rc)}</span><span>${desc(rc)}${changed ? ` <b style="color:var(--warn)">(marker's coarse)</b>` : ""}</span></div>`;
+    }).join("");
+    const same = back.every((rc) => { const o = recs[rc.src]; return rc.kind === o.kind && (rc.kind === "m" ? rc.type === o.type && rc.info === o.info && rc.coarse === o.coarse : rc.ch === o.ch && rc.ref === o.ref && rc.stop === o.stop); });
+    const ep = words.filter((w) => w.t === "EPOCH").length;
+    document.getElementById("pkStats").innerHTML = `<div class="stat"><b>${recs.length * 8} B</b><span>as 64-bit records</span></div><div class="stat"><b>${words.length * 4} B</b><span>as compact words (${ep} EPOCH)</span></div><div class="stat"><b>${((words.length * 4) / (recs.length * 8) * 100).toFixed(0)} %</b><span>of the size</span></div><div class="stat"><b style="color:${same ? "var(--good)" : "var(--bad)"}">${same ? "identical" : "differs"}</b><span>channel, index, stop, markers after the round trip</span></div>`;
+    document.querySelectorAll("#pack .pitem").forEach((el) => {
+      el.addEventListener("mouseenter", () => document.querySelectorAll(`#pack .pitem[data-src="${el.dataset.src}"]`).forEach((x) => x.classList.add("hot")));
+      el.addEventListener("mouseleave", () => document.querySelectorAll("#pack .pitem.hot").forEach((x) => x.classList.remove("hot")));
+    });
+  }
+  document.getElementById("packNew").addEventListener("click", () => { pseed++; renderPack(); });
+  document.getElementById("packN").addEventListener("input", renderPack);
+  renderPack();
+
+  // ===========================================================================
+  // frame map
+  // ===========================================================================
+  const fmap = document.getElementById("fmap");
+  for (let i = 0; i < 1024; i++) { const c = document.createElement("i"); c.dataset.w = i; fmap.appendChild(c); }
+  const REGIONS = {
+    header: ["--link", "header"], crc: ["--bad", "CRC"], zero: ["--sunk", "zero / unused"], pad: ["--rule", "PAD"],
+    rec: ["--ch2", "record"], ev: ["--ch2", "event word"], epoch: ["--board", "EPOCH word"], marker: ["--fpga", "marker words"], field: ["--host", "response field"], arg: ["--host", "argument"],
+  };
+  function headerText(i, kind) {
+    const isData = kind.startsWith("data") || kind === "compact";
+    const t = { 0: "magic \"AU2F\"", 1: "magic \"T601\"", 2: `version 1 · type ${isData ? "1 DATA" : kind === "command" ? "2 COMMAND" : "3 RESPONSE"}`, 3: "frame length 4096", 4: "run ID, low", 5: "run ID, high",
+      6: isData ? "sequence in the run, low" : "transaction ID, low", 7: isData ? "sequence, high" : "transaction ID, high",
+      8: isData ? "records sent before this frame, low" : "0", 9: isData ? "… high" : "0",
+      10: isData ? `record format ${kind === "compact" ? 2 : 1}` : "opcode " + (kind === "command" ? "0x30 GPX_CONFIGURE" : "(echoed)"), 11: "0",
+      12: `valid payload bytes: ${kind === "compact" ? 4028 : kind === "data64" ? 4024 : kind === "data64p" ? 960 : kind === "command" ? 20 : 452}`,
+      13: kind === "response" ? "status (0 OK …)" : "0", 14: isData ? "FT-clock timestamp, low" : "0", 15: isData ? "FT-clock timestamp, high" : "0" };
+    return t[i];
+  }
+  function layout(kind) {
+    // returns region key and description per word
+    const r = new Array(1024);
+    for (let i = 0; i < 16; i++) r[i] = ["header", headerText(i, kind)];
+    r[1023] = ["crc", "CRC-32/ISO-HDLC over bytes 0–4091"];
+    if (kind === "compact") {
+      const rnd = DT.rng(4);
+      let i = 16, ev = 0;
+      while (i < 1023) {
+        const x = rnd();
+        if (i === 16) { r[i++] = ["epoch", "EPOCH: index bits 23:12 for the events after it"]; continue; }
+        if (x < 0.012 && i + 3 <= 1023) { r[i] = ["marker", "HEAD: marker type and info"]; r[i + 1] = ["marker", "HI: coarse bits 47:24"]; r[i + 2] = ["marker", "LO: coarse bits 23:0"]; i += 3; continue; }
+        if (x < 0.02) { r[i++] = ["epoch", "EPOCH: index bits 23:12 changed"]; continue; }
+        r[i++] = ["ev", `event word ${++ev}: stop · channel · index bits 11:0`];
+      }
+    } else if (kind === "data64" || kind === "data64p") {
+      const n = kind === "data64" ? 503 : 120;
+      for (let k = 0; k < n; k++) { r[16 + 2 * k] = ["rec", `record ${k + 1}, low word (index low bits, stop)`]; r[17 + 2 * k] = ["rec", `record ${k + 1}, high word (kind, channel, coarse low 16, index high bits)`]; }
+      for (let i = 16 + 2 * n; i < 1023; i++) r[i] = ["zero", "0 (after the last record, up to word 1022)"];
+    } else if (kind === "command") {
+      for (let k = 0; k < 5; k++) r[16 + k] = ["arg", `payload word ${k}: GPX2 registers ${4 * k}–${Math.min(16, 4 * k + 3)} (one byte each)`];
+      for (let i = 21; i < 1023; i++) r[i] = ["zero", "must be 0 (else BAD_ARGUMENT)"];
+    } else {
+      for (let k = 0; k < 113; k++) r[16 + k] = ["field", `field ${k}: ${FIELDS[k] || ""}`];
+      for (let i = 129; i < 1023; i++) r[i] = ["zero", "0"];
+    }
+    return r;
+  }
+  const fword = document.getElementById("fword");
+  let curLayout;
+  function renderFrame() {
+    const kind = document.getElementById("fmKind").value;
+    curLayout = layout(kind);
+    fmap.querySelectorAll("i").forEach((c, i) => {
+      const [k] = curLayout[i];
+      c.style.background = k === "zero" ? "var(--sunk)" : `var(${REGIONS[k][0]})`;
+      c.style.opacity = k === "zero" ? 1 : k === "rec" && i % 2 ? 0.6 : 0.85;
+    });
+    const used = [...new Set(curLayout.map((x) => x[0]))];
+    document.getElementById("fmLegend").innerHTML = used.map((k) => `<span><span class="sw" style="background:var(${REGIONS[k][0]})"></span>${REGIONS[k][1]}</span>`).join("");
+    showWord(kind === "compact" ? 16 : 10);
+  }
+  function showWord(i) {
+    fmap.querySelectorAll("i.hot").forEach((c) => c.classList.remove("hot"));
+    fmap.children[i].classList.add("hot");
+    const [k, d] = curLayout[i];
+    fword.innerHTML = `<b>word ${i}</b> · bytes ${i * 4}–${i * 4 + 3}<br><span style="color:var(${REGIONS[k][0] === "--sunk" ? "--muted" : REGIONS[k][0]})">${REGIONS[k][1]}</span>: ${d}`;
+  }
+  fmap.addEventListener("mouseover", (e) => { if (e.target.dataset.w) showWord(+e.target.dataset.w); });
+  fmap.addEventListener("click", (e) => { if (e.target.dataset.w) showWord(+e.target.dataset.w); });
+  document.getElementById("fmKind").addEventListener("change", renderFrame);
+
+  // ===========================================================================
+  // reference tables
+  // ===========================================================================
+  const CMDS = [
+    ["1", "START", 8, "window µs (0 = until STOP); flags (bit 0 = compact records)", "no (BUSY)"],
+    ["2", "STOP", 0, "–", "yes"],
+    ["3", "STATUS", 0, "–", "yes"],
+    ["6", "SET_LEDS", 4, "Au LED mask ≤ 0xFF", "no"],
+    ["0x20", "SET_THRESHOLDS", 20, "channel mask; DAC code ch1–ch4 (≤ 41953)", "no"],
+    ["0x21", "SET_HYSTERESIS", 20, "channel mask; wiper ch1–ch4", "no"],
+    ["0x22", "SET_LED1", 16, "red, green, blue, current", "no"],
+    ["0x23", "SET_LED2", 4, "on-mask", "no"],
+    ["0x24", "PROBE", 0, "–", "no"],
+    ["0x25", "READBACK", 0, "–", "no"],
+    ["0x30", "GPX_CONFIGURE", 20, "GPX2 registers 0–16, packed one per byte", "no"],
+    ["0x31", "GPX_READ_CONFIG", 0, "– (compares with the last written)", "no"],
+    ["0x32", "GPX_RESET", 0, "–", "no"],
+    ["0x33", "GPX_INIT", 0, "– (restarts measuring, resets the reference index)", "no"],
+    ["0x34", "GPX_READ_RESULTS", 0, "– (result registers 8–31 over SPI)", "no"],
+    ["0x40", "LVDS_SET", 20, "LCLKIN enable; divider code 0–3; bit phase 0–15; SDO taps; FRAME taps (0–31, 78 ps each)", "no"],
+    ["0x41", "LVDS_PHASE", 4, "target phase step 0–223 (17.857 ps each)", "no"],
+    ["0x42", "LINK_TEST", 4, "window in 8 ns cycles (1 … 10⁸)", "no"],
+    ["0x101", "RUN_COMPLETE", "–", "unsolicited response when a START window ends", "–"],
+  ];
+  document.getElementById("cmdBody").innerHTML = CMDS.map(([op, n, len, p, s]) => `<tr><td><code>${op}</code></td><td><b>${n}</b></td><td class="num">${len}</td><td>${p}</td><td>${s === "yes" ? '<span class="pill good">yes</span>' : s === "–" ? "–" : '<span class="pill warn">BUSY</span>'}</td></tr>`).join("");
+
+  const FIELD_RANGES = [
+    [0, "opcode"], [1, "design version 0x54440003 (release 2: …02, release 1: …01)"], [2, "fault bits: 0 FT link lost since reset; 1 a partial command timed out; 2 event FIFO read underrun"],
+    [3, "valid command frames since the link came up"], [4, "discarded command frames since the link came up"], [5, "Au LED mask"],
+    [6, "flags: 0 board boot done; 1 DAC OK; 2 MCP23S08 OK; 3 U3 OK; 4 U8 OK; 5 AW2013 OK; 6 TMP117 OK; 7 LED mask set"],
+    [7, "comparator board first error"], [8, "board error count"], [9, "board operation count"],
+    [[10, 13], "DAC codes ch1–ch4 (read back): the trigger levels"], [[14, 17], "DAC DEVICEID, GAIN, CONFIG, STATUS"], [[18, 21], "hysteresis wipers ch1–ch4 (value in bits 8:0)"],
+    [[22, 24], "AW2013 ID, GCR, LCTR"], [[25, 27], "AW2013 LCFG0–2"], [[28, 30], "AW2013 PWM0–2"], [[31, 32], "MCP23S08 IODIR, OLAT"], [33, "DAC code limit, 41953"],
+    [34, "TMP117 Device_ID (expect 0x0117)"], [35, "TMP117 temperature (two's complement, 7.8125 m°C per LSB)"], [36, "TMP117 configuration"], [37, "TMP117 polls: 15:0 successful, 31:16 failed"],
+    [38, "GPX2 flags: 0 configured; 1 verified; 2 measuring; 3 PARITY pin; 4 parity of readback; 5 INTERRUPT pin; 6 last GPX2 operation failed; 7 test pattern on"],
+    [39, "GPX2 mismatch mask (bit r = register r differed in the last readback)"], [[40, 44], "written GPX2 configuration, registers 0–16 packed"], [[45, 49], "last GPX2 readback, packed"],
+    [[50, 55], "GPX2 result registers 8–31 from the last GPX_READ_RESULTS"], [56, "GPX2 operations: 15:0 count, 31:16 failed"], [57, "GPX2 last error: 7:0 kind, 15:8 operation"],
+    [58, "LVDS: 0 LCLKIN on; 2:1 divider code; 6:3 bit phase; 8 MMCM locked; 9 IDELAYCTRL ready; 10 controller timeout seen; 31:16 phase step"],
+    [59, "SDO IDELAY taps (byte c = channel c+1)"], [60, "FRAME IDELAY taps"], [61, "capture format: 7:0 reference-index bits; 15:8 stop bits; 16 valid; 17 DDR"],
+    [62, "window of the last LINK_TEST (8 ns cycles)"],
+    ...[0, 1, 2, 3].map((c) => [[63 + 6 * c, 68 + 6 * c], `channel ${c + 1} link test: frames, good, bad pattern, structure errors, SDO ones, FRAME ones`]),
+    [[87, 90], "LCLKOUT histogram: 8 slots of 2 ns, samples that read 1 (16-bit, saturating)"],
+    [91, "stream: 0 capture requested; 1 draining; 2 capture active; 3 window ended; 4 STOP pending"], [92, "window µs of the current or last run"],
+    [[93, 94], "records sent this run (u64; compact: non-PAD words)"], [[95, 96], "DATA frames sent this run (u64)"], [97, "events dropped this run (FIFO full; saturating)"],
+    [[98, 99], "events captured this run (u64)"], [100, "cycles with structure errors while capturing this run"], [101, "event FIFO highest fill this run (records)"],
+    [[102, 103], "TXE stall cycles this run (u64)"], [[104, 105], "FT cycles with RXF_N low while the FPGA held the bus to send (u64)"], [[106, 107], "run ID of the current or last run"],
+    [108, "LCLKIN at divider code 0, kHz (250000)"], [109, "coarse tick, ps (8000)"], [110, "15:0 LVDS_PHASE steps (224); 23:16 samples per lclk_rx cycle (4)"],
+    [111, "events dropped by the compact packer this run (stop result in the marker space)"], [112, "record format of the current or last run: 1 64-bit, 2 compact"],
+  ];
+  const FIELDS = [];
+  FIELD_RANGES.forEach(([r, d]) => { const [a, b] = Array.isArray(r) ? r : [r, r]; for (let k = a; k <= b; k++) FIELDS[k] = d; });
+  document.getElementById("fieldBody").innerHTML = FIELD_RANGES.map(([r, d]) => {
+    const [a, b] = Array.isArray(r) ? r : [r, r];
+    return `<tr data-q="${(a + " " + b + " " + (16 + a) + " " + d).toLowerCase()}"><td class="num">${a === b ? a : a + "–" + b}</td><td class="num">${a === b ? 16 + a : 16 + a + "–" + (16 + b)}</td><td>${d}</td></tr>`;
+  }).join("");
+  document.getElementById("fieldSearch").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll("#fieldBody tr").forEach((tr) => tr.classList.toggle("hidden-row", !!q && !tr.dataset.q.includes(q)));
+  });
+  renderFrame();
+})();
+</script>
+</body>
+</html>

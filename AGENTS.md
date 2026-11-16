@@ -1,6 +1,6 @@
 # Dantagger (unified): agent instructions and project record
 
-Last updated: 2026-10-23
+Last updated: 2026-11-16
 
 Read this whole file before working here, and keep it current in the same
 change as the work (user instructions, decisions, status, blockers).
@@ -17,6 +17,19 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 
 ## User instructions
 
+- 2026-11-16: GitHub remote `origin` = `git@github.com:dwsorensen/Dantagger.git`
+  (**public** repository; SSH key `~/.ssh/id_ed25519` is the user's
+  account). Default branch renamed `master` -> `main`. Push only when asked.
+
+- 2026-11-05: "Please switch to the new version ~/dws/Dantagger and remove
+  the old one in SDE". Done: the SDE venv's switch was reinstalled from
+  `tools/install_timetagger_hook.py` here (so `import TimeTagger` is this
+  package), and `SDE/Dantagger` was moved to the desktop trash. (The old
+  copy only spoke Release 1; with Release 3 on the board it failed with
+  "response payload length 452 (expected 436)". Its folder also shadowed
+  this package when a script ran from SDE, because the switch appends
+  `python/` to `sys.path`.)
+
 - 2026-10-22: Unify both projects here: one C++ backend that talks to the
   board; C++ libraries for live computation of every measurement type; a
   Python library exposing them "just like current Dantagger, don't really
@@ -29,6 +42,7 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   of detail of the old Live 2D Histogram page.**
 - 2026-10-22: Copy/edit into this directory only. **Do not change
   `../FPGA/TDC_Firmware` or `../SDE/Dantagger`** (until the user says so).
+  (`SDE/Dantagger` no longer exists: removed 2026-11-05, see below.)
 - 2026-10-22, answers to the plan:
   1. Support firmware releases 1 and 2 (copy TDC_Firmware's working tree, which
      has the uncommitted release-2 host code).
@@ -63,9 +77,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
       trigger/hysteresis defaults applied; read back what the board has).
       Python still configures and calibrates the GPX2 on the first open after
       plug-in (that is setup, not a reset).
-  12. Python package lives here (`python/Dantagger`); the SDE venv's
-      `TimeTagger` switch keeps pointing at `SDE/Dantagger` until the user
-      says otherwise.
+  12. Python package lives here (`python/Dantagger`). Since 2026-11-05 the
+      SDE venv's `TimeTagger` switch points here (see below).
   13. `git init` here; commit at the end of the work session. The app is
       called **Dantagger**.
 - 2026-10-22: **`icon.png` (repository root) is the app's icon "in this and
@@ -73,6 +86,13 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   RGBA at 16-256 px; Pillow if available, else a pure-Python decoder that
   matches it); the app sets it on its main window and on measurements in
   their own windows; X11 class `Dantagger`. Replace the file to change it.
+- 2026-10-22: **2D histogram zoom**: click and drag a region on the map and
+  it is measured again to fill the view: adjust the bin widths and delays,
+  never the number of bins. Axes stay 0 to max (delays not subtracted);
+  shared delays are changed even if other panels use those channels; an axis
+  that cannot move (STOP = START, or x STOP = y STOP) is fine as is; Back and
+  Reset zoom; bin widths clamped to at least 1 ps; the zoom is not exactly a
+  crop (first STOP after the START) and that is fine.
 - 2026-10-22: "make that firmware change. Package it into release 3 and make
   sure it's super safe for my board" (compact 4-byte records), then "one
   thread receiving data and the other processing it" (done first). Answers:
@@ -184,6 +204,14 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   Release 3 shares release 2's state file (same receive path). The app's TDC
   page shows the record format.
 
+- **2D zoom** (`panel_hist2d.cpp`): left drag with auto-fit on; the STOP
+  channels' delays move by the corner (x STOP = y STOP: both by the smaller
+  corner, bins widened to cover the rectangle), bin width = span / bins
+  rounded, >= 1 ps. A running panel stops, the delays go through
+  `Device::set_delay`, and it starts again (cleared) once `Device::idle()`.
+  Back / Reset zoom restore bin widths and delays (in memory, not in the
+  session file).
+
 ## Status (2026-10-22)
 
 | Part | State |
@@ -193,7 +221,7 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 | Core C++ tests | 4,450,725 checks PASS (also ASan/UBSan): release-3 (compact and 64-bit), release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
 | Python tests | 27 PASS, bit-exact against Swabian (oracle) |
 | Benchmarks | as SDE/Dantagger within noise: end to end tomography set 55-59 M tags/s, HistogramND 360-372, decoder 85-99 M records/s (noisy) |
-| App | `build/app/dantagger`; `--selftest` 26 steps PASS (3 runs), screenshots; `--snapshot` works against the simulator |
+| App | `build/app/dantagger`; `--selftest` 27 steps PASS, screenshots; `--snapshot` works against the simulator |
 | Hardware | Release 2 on the board 2026-10-22: calibrated 250 MHz DDR, link ~28 M records/s, 23.35 M tags/s live with 0 dropped (TDC_Firmware `project_1/results/2026-10-22-release2-hw/`) |
 | Release 3 | **Built and verified 2026-10-23, packaged** in TDC_Firmware `releases/release-3/` (tag `release-3`; BIN `ecc9ff7f…bad97f`): every build gate, full bench, RTL -> host cross-check with `build/rtl_frames` (271 frames, 33 compact, 0 failures), mutation 67/67. Host support here. **Not yet on the board** (open item 8) |
 
@@ -214,8 +242,10 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
    the app). USB 3 throughput (test pattern at full rate) still unmeasured.
 4. Python scripts that relied on the 0.010 V / 1000 ohm defaults on open now
    get the board's values (a freshly powered board: -0.1004 V).
-5. The SDE venv's `import TimeTagger` switch still points at SDE/Dantagger;
-   reinstall it from here (`tools/install_timetagger_hook.py`) only when asked.
+5. The SDE venv's `import TimeTagger` switch points here (2026-11-05). The
+   user toggles it: `tools/install_timetagger_hook.py [--uninstall]`; check
+   the live state with `.venv/bin/python -c "import TimeTagger;
+   print(TimeTagger.__file__)"` rather than trusting notes.
 6. Separate OS windows were checked only hidden (self-test); look at them on
    the desktop (XWayland).
 8. Release 3 on the board: TDC_Firmware `project_1/README_HW_TEST_R3.md`
@@ -232,7 +262,7 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   folder under DIR, so it never touches the user's settings.
 - Tests that run SDE scripts use `PYTHONDONTWRITEBYTECODE=1` so nothing is
   written into SDE.
-- Do not change `../SDE/Dantagger`. `../FPGA/TDC_Firmware` may be changed
+- `../SDE/Dantagger` is gone (removed 2026-11-05). `../FPGA/TDC_Firmware` may be changed
   (since 2026-10-22), never its `releases/` folders.
 
 ## Lessons
@@ -278,6 +308,21 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   expansion, FakeFpga packer, decoder margin, sidecar keys, backend policy,
   tdcctl `--compact`, usb_bench `--format`, app records line, rtl_frames,
   tests); release 3 shares release 2's state file.
+- 2026-10-22: 2D histogram zoom (drag a rectangle: bin widths and STOP
+  delays, same bin counts; Back / Reset zoom); self-test step with a
+  simulated drag.
 - 2026-10-23: Release 3 verified and packaged in TDC_Firmware (build, full
   bench, rtl_frames cross-check, mutation 67/67; `releases/release-3/`);
   hardware procedure TDC_Firmware `project_1/README_HW_TEST_R3.md`.
+- 2026-10-26: `artifacts/`: an interactive explainer of the firmware and
+  host (index, fpga, host, formats pages + shared.css/js; Intuition /
+  Mechanism / Exact detail levels; published as one claude.ai artifact).
+  User asked for it after an FPGA-side measurement feasibility sweep
+  (verdict: feasible except full-resolution 2D histograms; not pursued).
+- 2026-11-05: SDE venv switch now points here; `SDE/Dantagger` removed
+  (trashed), user request.
+- 2026-11-06: SDE venv switch uninstalled (Swabian is the default again),
+  user request.
+- 2026-11-16: GitHub remote added (dwsorensen/Dantagger), branch renamed
+  to `main`, first push (user request). `artifacts/.check/` (browser
+  profile from the page checks) is ignored.
