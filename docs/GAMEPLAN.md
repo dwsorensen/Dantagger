@@ -207,9 +207,10 @@ Python (pybind11 module `_dantagger` + pure-Python `Dantagger` package)
 
 1. Import-only names: `Resolution` (Standard/HighResA/B/C),
    `ChannelEdge`, `CHANNEL_UNUSED`, `UNKNOWN`/`LOW`/`HIGH`,
-   `LOGGER_WARNING`, `setLogger`. `Combiner`, `Coincidence`, `Scope`,
-   `Event` and `TimeDifferences` exist as stubs that raise
-   `NotImplementedError` if anyone constructs them.
+   `LOGGER_WARNING`, `setLogger`. `Combiner`, `Scope`, `Event` and
+   `TimeDifferences` exist as stubs that raise `NotImplementedError` if
+   anyone constructs them. (`Coincidence` and `Coincidences` were
+   implemented on 2026-11-16 as virtual channels: README, "Coincidences".)
 2. `scanTimeTagger()` (FT601 serials) and `freeTimeTagger()`.
 3. `setTriggerLevel` / `setDeadtime` / `setInputDelay` /
    `setDelaySoftware` argument handling, keyword names (`channel=`,

@@ -19,6 +19,7 @@
 //   the most recent last.
 // * TimeTagStream: an in-memory copy of the tags (never written to disk).
 // Equal timestamps on different channels are ordered by channel number.
+// Every class also counts virtual channels (Coincidence, channels 5..31).
 
 #include "measurement.hpp"
 
@@ -81,7 +82,7 @@ public:
 
 private:
     std::vector<int> channels_;
-    std::array<std::int64_t, kNumChannels + 1> counts_{};
+    std::array<std::int64_t, kChannelSlots> counts_{};
 };
 
 class Counter final : public Measurement {
@@ -106,7 +107,7 @@ private:
     std::vector<int> channels_;
     timestamp_t binwidth_;
     int n_values_;
-    std::array<std::int64_t, kNumChannels + 1> current_{};   // integrating bin, per hardware channel
+    std::array<std::int64_t, kChannelSlots> current_{};   // integrating bin, per channel number
     std::vector<std::int32_t> ring_;                         // [slot][n_values]
     std::vector<std::uint64_t> total_;
     std::int64_t completed_{0};                              // bins completed since clear
@@ -188,7 +189,7 @@ public:
     // some axis fell beyond that axis' range ("outside").
     struct Stats {
         std::uint64_t starts{0};
-        std::array<std::uint64_t, kNumChannels + 1> stop_tags{};
+        std::array<std::uint64_t, kChannelSlots> stop_tags{};
         std::uint64_t abandoned{0};
         std::uint64_t outside{0};
     };
@@ -202,7 +203,7 @@ private:
     std::vector<int> n_bins_;
     std::vector<std::int64_t> strides_;
     std::vector<FastDiv> divs_;
-    std::array<std::uint32_t, kNumChannels + 1> axes_of_{};   // bit mask of axes per hardware channel
+    std::array<std::uint32_t, kChannelSlots> axes_of_{};   // bit mask of axes per channel number
     std::uint32_t all_{0};
     bool active_{false};
     timestamp_t start_time_{0};
@@ -237,7 +238,7 @@ public:
 
 private:
     std::size_t n_max_;
-    std::array<bool, kNumChannels + 1> wanted_{};
+    std::array<bool, kChannelSlots> wanted_{};
     StreamBuffer buf_;
     bool started_{false};
 };

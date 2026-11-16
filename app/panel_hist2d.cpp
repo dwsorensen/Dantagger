@@ -47,7 +47,7 @@ protected:
         }
     };
 
-    std::shared_ptr<dt::Measurement> make() override {
+    std::shared_ptr<dt::Measurement> make(dt::Tagger&) override {
         if (static_cast<std::int64_t>(edit_.n_x) * edit_.n_y > kMaxBins)
             throw std::invalid_argument("at most " + ui::fmt_count(kMaxBins) + " bins in all (e.g. 1024 x 1024)");
         return std::make_shared<dt::HistogramND>(edit_.start, std::vector<int>{edit_.stop_x, edit_.stop_y},

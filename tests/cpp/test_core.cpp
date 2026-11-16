@@ -11,6 +11,7 @@
 #include "record_decoder.hpp"
 #include "tagger.hpp"
 #include "tdc_backend.hpp"
+#include "virtual_channels.hpp"
 
 #include "tdcctl/fake_fpga.hpp"
 #include "tdcctl/tdc_session.hpp"
@@ -530,9 +531,183 @@ static void test_saved_streams() {
     std::filesystem::remove_all(dir);
 }
 
+// ---------------------------------------------------------------------------
+// Virtual channels (Coincidence): the same tags however the stream is cut into
+// chunks; a new run and an overflow forget the past; numbers and inputs.
+struct CoincRun {
+    std::vector<std::pair<timestamp_t, int>> tags;   // every channel incl. the virtual ones, stream order
+    std::vector<int> vch;
+};
+
+// runs[r][c - 1]: absolute raw times; run r + 1 starts `gap` after run r ends.
+static CoincRun coincidence_run(const std::vector<std::vector<std::vector<timestamp_t>>>& runs, std::size_t pieces,
+                                const std::vector<Special>& overflow = {}, timestamp_t gap = 1'000'000) {
+    WarningLog log;
+    Engine engine(log);
+    auto c12 = std::make_shared<Coincidence>(std::vector<int>{1, 2}, 2000);
+    auto c123 = std::make_shared<Coincidence>(std::vector<int>{1, 2, 3}, 5000);
+    CoincRun out;
+    out.vch.push_back(engine.add_virtual(c12));
+    out.vch.push_back(engine.add_virtual(c123));
+    auto chain = std::make_shared<Coincidence>(std::vector<int>{out.vch[0], 4}, 3000);
+    out.vch.push_back(engine.add_virtual(chain));
+    std::vector<int> all{1, 2, 3, 4};
+    all.insert(all.end(), out.vch.begin(), out.vch.end());
+    auto stream = std::make_shared<TimeTagStream>(10'000'000, all);
+    engine.add(stream, false);
+    engine.start({stream.get()}, -1, true);
+    timestamp_t base = 0;
+    for (const auto& run : runs) {
+        timestamp_t end = base;
+        for (const auto& lane : run)
+            if (!lane.empty()) end = std::max(end, lane.back() + 1);
+        end += 1000;
+        for (std::size_t k = 0; k < pieces; ++k) {   // `pieces` chunks with increasing watermarks
+            RawChunk ch;
+            const timestamp_t lo = base + (end - base) * static_cast<timestamp_t>(k) / static_cast<timestamp_t>(pieces);
+            const timestamp_t hi = base + (end - base) * static_cast<timestamp_t>(k + 1) / static_cast<timestamp_t>(pieces);
+            ch.run_begin = k == 0;
+            ch.run_base = base;
+            ch.watermark = hi;
+            ch.run_end = k + 1 == pieces;
+            for (int c = 0; c < kNumChannels; ++c)
+                for (timestamp_t t : run[static_cast<std::size_t>(c)])
+                    if (t >= lo && t < hi) ch.events[c].push_back(t);
+            for (const auto& s : overflow)
+                if (s.time >= lo && s.time < hi) ch.specials.push_back(s);
+            engine.push(std::move(ch));
+        }
+        base = end + gap;
+    }
+    engine.wait_drained();
+    StreamBuffer b;
+    {
+        auto g = stream->guard();
+        b = stream->take();
+    }
+    for (std::size_t i = 0; i < b.timestamps.size(); ++i)
+        if (b.types[i] == 0) out.tags.emplace_back(b.timestamps[i], b.channels[i]);
+    return out;
+}
+
+static void test_virtual_channels() {
+    std::mt19937_64 rng(9);
+    std::vector<std::vector<std::vector<timestamp_t>>> runs(2, std::vector<std::vector<timestamp_t>>(kNumChannels));
+    timestamp_t base = 0;
+    for (auto& run : runs) {
+        for (int c = 0; c < kNumChannels; ++c) {
+            auto& lane = run[static_cast<std::size_t>(c)];
+            timestamp_t t = base + 100;
+            for (int i = 0; i < 4000; ++i) {
+                t += 1 + static_cast<timestamp_t>(rng() % 6000);
+                lane.push_back(c == 3 ? (t / 500) * 500 : t);   // channel 4 on a grid: ties with the others
+            }
+            std::sort(lane.begin(), lane.end());
+            lane.erase(std::unique(lane.begin(), lane.end()), lane.end());
+        }
+        base = 100'000'000'000;   // the second run far later
+    }
+    const CoincRun one = coincidence_run(runs, 1);
+    CHECK((one.vch == std::vector<int>{5, 6, 7}));
+    std::size_t n_virtual = 0;
+    for (const auto& [t, c] : one.tags) n_virtual += c > kNumChannels ? 1 : 0;
+    CHECK(n_virtual > 1000);
+    for (std::size_t pieces : {2, 7, 64, 500}) {
+        const CoincRun many = coincidence_run(runs, pieces);
+        CHECK(many.tags == one.tags);   // block edges change nothing
+    }
+    // Brute force for {1, 2} within 2000 ps, each run on its own (a new run forgets the past).
+    std::size_t want = 0;
+    for (const auto& run : runs) {
+        std::vector<std::pair<timestamp_t, int>> m;
+        for (int c = 1; c <= 2; ++c)
+            for (timestamp_t t : run[static_cast<std::size_t>(c - 1)]) m.emplace_back(t, c);
+        std::sort(m.begin(), m.end());
+        timestamp_t last[3] = {kUnset, kUnset, kUnset};
+        for (const auto& [t, c] : m) {
+            last[c] = t;
+            const timestamp_t other = last[3 - c];
+            if (other != kUnset && t - other < 2000) ++want;
+        }
+    }
+    std::size_t got = 0;
+    for (const auto& [t, c] : one.tags) got += c == 5 ? 1 : 0;
+    CHECK(got == want);
+    // Each virtual tag right after a tag of its group at the same time.
+    for (std::size_t i = 0; i < one.tags.size(); ++i) {
+        if (one.tags[i].second <= kNumChannels) continue;
+        std::size_t j = i;   // skip later virtual channels' tags made by the same tag
+        while (j > 0 && one.tags[j - 1].second > one.tags[i].second) --j;
+        CHECK(j > 0 && one.tags[j - 1].first == one.tags[i].first);
+    }
+
+    // Across a run gap and across an overflow: no coincidence of tags on either side.
+    {
+        std::vector<std::vector<std::vector<timestamp_t>>> two(2, std::vector<std::vector<timestamp_t>>(kNumChannels));
+        two[0][0] = {1000};
+        two[1][1] = {2101};   // the first run ends at 2001, the second begins there: 1101 ps apart
+        const CoincRun r = coincidence_run(two, 1, {}, 0);
+        CHECK(r.tags.size() == 2);
+        two[1][1].clear();
+        two[0][1] = {2101};   // the same tags in one run: a coincidence
+        CHECK(coincidence_run(two, 1, {}, 0).tags.size() == 3);
+        std::vector<std::vector<std::vector<timestamp_t>>> ov(1, std::vector<std::vector<timestamp_t>>(kNumChannels));
+        ov[0][0] = {1000, 5000};
+        ov[0][1] = {1600, 5100};
+        Special s;
+        s.time = 1500;
+        s.type = TagType::OverflowBegin;
+        const CoincRun with = coincidence_run(ov, 3, {s});
+        const CoincRun without = coincidence_run(ov, 3);
+        std::size_t a = 0, b = 0;
+        for (const auto& [t, c] : with.tags) a += c == 5 ? 1 : 0;
+        for (const auto& [t, c] : without.tags) b += c == 5 ? 1 : 0;
+        CHECK(a == 1 && b == 2);
+    }
+
+    // Registration: numbers after the inputs, inputs must exist, freed numbers come back.
+    {
+        WarningLog log;
+        Engine engine(log);
+        auto a = std::make_shared<Coincidence>(std::vector<int>{1, 2}, 1000);
+        CHECK(engine.add_virtual(a) == 5);
+        CHECK(engine.channel_exists(4) && engine.channel_exists(5) && !engine.channel_exists(6));
+        bool threw = false;
+        try {
+            engine.add_virtual(std::make_shared<Coincidence>(std::vector<int>{1, 9}, 1000));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+        threw = false;
+        try {
+            engine.add_virtual(a);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+        auto b = std::make_shared<Coincidence>(std::vector<int>{5, 3}, 1000);
+        CHECK(engine.add_virtual(b) == 6);
+        engine.remove_virtual(a.get());
+        CHECK(!engine.channel_exists(5));
+        CHECK(engine.add_virtual(std::make_shared<Coincidence>(std::vector<int>{1}, 1000)) == 7);   // 5 is still read by b
+        engine.remove_virtual(b.get());
+        CHECK(engine.add_virtual(std::make_shared<Coincidence>(std::vector<int>{1}, 1000)) == 5);
+        threw = false;
+        try {
+            Coincidence bad(std::vector<int>{1, 2}, -1);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
 int main() {
     std::printf("saved tag streams (recorder -> file backend)\n");
     test_saved_streams();
+    std::printf("virtual channels (Coincidence)\n");
+    test_virtual_channels();
     std::printf("window across runs\n");
     test_window_across_runs();
     std::printf("fastdiv\n");

@@ -98,13 +98,16 @@ void Engine::loop() {
         }
         space_cv_.notify_all();
         bool demand_changed = false;
+        std::size_t input_tags = 0;
         if (merger_.push(chunk, block_)) {
             watch(block_);
+            input_tags = block_.time.size();
             std::lock_guard<std::mutex> lock(mu_);
+            if (!virtuals_.empty()) apply_virtuals(block_);
             dispatch(block_, demand_changed);
         }
         position_.store(merger_.position());
-        tags_processed_.fetch_add(block_.time.size());
+        tags_processed_.fetch_add(input_tags);
         deadtime_dropped_.store(merger_.deadtime_dropped());
         if (demand_changed) notify_demand();
     }
@@ -217,6 +220,83 @@ void Engine::dispatch(const TagBlock& block, bool& demand_changed) {
         finished_cv_.notify_all();
         demand_changed = true;
     }
+}
+
+void Engine::apply_virtuals(TagBlock& block) {
+    for (const auto& vp : virtuals_) {
+        VirtualChannel& v = *vp;
+        if (block.run_begin) v.on_gap();
+        if (!v.enabled) continue;
+        v_out_.clear();
+        v.process(block, v_out_);
+        if (v_out_.empty()) continue;
+        // Each new tag right after the tag that made it (as Swabian).
+        const std::int8_t vc = static_cast<std::int8_t>(v.channel());
+        const std::size_t n = block.time.size(), m = v_out_.size();
+        v_time_.resize(n + m);
+        v_channel_.resize(n + m);
+        std::size_t from = 0, to = 0;
+        for (const std::size_t i : v_out_) {
+            const std::size_t len = i + 1 - from;
+            std::copy_n(block.time.begin() + static_cast<std::ptrdiff_t>(from), len, v_time_.begin() + static_cast<std::ptrdiff_t>(to));
+            std::copy_n(block.channel.begin() + static_cast<std::ptrdiff_t>(from), len, v_channel_.begin() + static_cast<std::ptrdiff_t>(to));
+            to += len;
+            from = i + 1;
+            v_time_[to] = block.time[i];
+            v_channel_[to] = vc;
+            ++to;
+        }
+        std::copy(block.time.begin() + static_cast<std::ptrdiff_t>(from), block.time.end(), v_time_.begin() + static_cast<std::ptrdiff_t>(to));
+        std::copy(block.channel.begin() + static_cast<std::ptrdiff_t>(from), block.channel.end(), v_channel_.begin() + static_cast<std::ptrdiff_t>(to));
+        block.time.swap(v_time_);
+        block.channel.swap(v_channel_);
+    }
+}
+
+int Engine::add_virtual(const std::shared_ptr<VirtualChannel>& v) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (v->channel_ != 0) throw std::invalid_argument("this virtual channel is already registered");
+    std::array<bool, kChannelSlots> taken{};   // registered, or read by a registered virtual channel
+    for (const auto& o : virtuals_) {
+        taken[static_cast<std::size_t>(o->channel_)] = true;
+        for (int c : o->inputs())
+            if (c >= 1 && c <= kMaxChannel) taken[static_cast<std::size_t>(c)] = true;
+    }
+    for (int c : v->inputs()) {
+        if (c >= 1 && c <= kNumChannels) continue;
+        bool known = false;
+        for (const auto& o : virtuals_) known = known || o->channel_ == c;
+        if (!known)
+            throw std::invalid_argument("channel " + std::to_string(c) +
+                                        " is neither an input (1-4) nor an existing virtual channel");
+    }
+    // The lowest number nobody uses or reads (a number still read by a
+    // virtual channel whose input went away is not handed out again).
+    int number = 0;
+    for (int c = kNumChannels + 1; c <= kMaxChannel && number == 0; ++c)
+        if (!taken[static_cast<std::size_t>(c)]) number = c;
+    if (number == 0)
+        throw std::runtime_error("no free virtual channel number (at most " + std::to_string(kMaxChannel - kNumChannels) +
+                                 " virtual channels at a time)");
+    v->channel_ = number;
+    v->on_gap();
+    virtuals_.push_back(v);
+    return number;
+}
+
+void Engine::remove_virtual(VirtualChannel* v) {
+    std::lock_guard<std::mutex> lock(mu_);
+    virtuals_.erase(std::remove_if(virtuals_.begin(), virtuals_.end(),
+                                   [&](const std::shared_ptr<VirtualChannel>& p) { return p.get() == v; }),
+                    virtuals_.end());
+}
+
+bool Engine::channel_exists(int channel) {
+    if (channel >= 1 && channel <= kNumChannels) return true;
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& o : virtuals_)
+        if (o->channel_ == channel) return true;
+    return false;
 }
 
 void Engine::add(const std::shared_ptr<Measurement>& m, bool autostart) {

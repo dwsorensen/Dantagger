@@ -93,10 +93,13 @@ public:
 
 protected:
     // ---- per panel type ----
-    // A new measurement from the edited settings (throws std::invalid_argument).
-    virtual std::shared_ptr<dt::Measurement> make() = 0;
+    // A new measurement from the edited settings (throws std::invalid_argument),
+    // for `tagger` (the live one or a file replay): virtual channels it needs
+    // are created there (the panel keeps them as pending until adopt_edited).
+    virtual std::shared_ptr<dt::Measurement> make(dt::Tagger& tagger) = 0;
     virtual bool edited_differs() const = 0;     // the edited settings differ from the measurement's
-    virtual void adopt_edited() = 0;             // the measurement now has the edited settings
+    // The measurement now has the edited settings (the previous one is detached).
+    virtual void adopt_edited() = 0;
     virtual void settings_ui(AppContext& ctx) = 0;
     virtual void pull(dt::Measurement& m) = 0;   // copies the data (engine mutex held)
     virtual void view_ui(AppContext& ctx) = 0;
@@ -112,6 +115,8 @@ protected:
 
     // ---- for panel types ----
     bool has_data() const { return m_ != nullptr; }
+    // The tagger the measurement is registered with (set before adopt_edited()).
+    const std::shared_ptr<dt::Tagger>& tagger() const { return tagger_; }
     bool is_file_run() const { return file_backend_ != nullptr; }
     const dt::FileBackend* file_backend() const { return file_backend_; }
     // "# ..." lines describing the source, the settings shared by all panels and the capture (CSV headers).
@@ -159,7 +164,7 @@ void channel_table(AppContext& ctx, unsigned highlight, bool comparator_only = f
 
 // A START/STOP channel picker (1..4).
 bool channel_combo(const char* id, int* channel, float width = 90.0f);
-// Channel checkboxes (bit c-1); keeps at least one set.
-bool channel_checks(const char* id, unsigned* mask);
+// Channel checkboxes (bit c-1); keeps at least `min_on` set.
+bool channel_checks(const char* id, unsigned* mask, int min_on = 1);
 
 }  // namespace app

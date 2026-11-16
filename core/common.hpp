@@ -2,7 +2,9 @@
 
 // Shared types of the Dantagger core.  Times are picoseconds on one
 // monotonic timeline per open board (int64, as Swabian's timestamp_t).
-// Channels are 1..4 (STOP1..STOP4); inside the core they are int8.
+// Channels are 1..4 (STOP1..STOP4); inside the core they are int8.  Virtual
+// channels (Coincidence) take the numbers after them, 5..kMaxChannel, as the
+// Swabian library numbers its virtual channels after the hardware inputs.
 
 #include <pthread.h>
 
@@ -19,6 +21,8 @@ using timestamp_t = std::int64_t;
 using channel_t = std::int32_t;
 
 constexpr int kNumChannels = 4;                     // STOP1..STOP4 = channels 1..4
+constexpr int kMaxChannel = 31;                     // virtual channels: kNumChannels + 1 .. kMaxChannel
+constexpr int kChannelSlots = kMaxChannel + 1;      // arrays indexed by channel number
 constexpr channel_t kChannelUnused = -134217728;    // Swabian CHANNEL_UNUSED
 constexpr timestamp_t kNever = std::numeric_limits<timestamp_t>::max();
 constexpr timestamp_t kUnset = std::numeric_limits<timestamp_t>::min();
@@ -95,6 +99,15 @@ inline void set_thread_name(const char* name) { pthread_setname_np(pthread_self(
 inline void check_channel(int channel) {
     if (channel < 1 || channel > kNumChannels)
         throw std::invalid_argument("channel " + std::to_string(channel) + " does not exist (the TDC board has channels 1-4)");
+}
+
+// A channel a measurement may count: an input (1..4) or a virtual channel
+// number (whether that virtual channel exists is the tagger's business).
+inline void check_tag_channel(int channel) {
+    if (channel < 1 || channel > kMaxChannel)
+        throw std::invalid_argument("channel " + std::to_string(channel) +
+                                    " does not exist (the TDC board has channels 1-4; virtual channels are 5-" +
+                                    std::to_string(kMaxChannel) + ")");
 }
 
 }  // namespace dt

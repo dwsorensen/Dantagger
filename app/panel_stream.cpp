@@ -21,7 +21,7 @@ public:
     explicit StreamPanel(int id) : Panel(Kind::stream, id) { run_s = 1.0; }
 
 protected:
-    std::shared_ptr<dt::Measurement> make() override {
+    std::shared_ptr<dt::Measurement> make(dt::Tagger&) override {
         std::vector<int> chans;
         for (int c = 1; c <= 4; ++c)
             if ((edit_mask_ >> (c - 1)) & 1U) chans.push_back(c);

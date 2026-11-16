@@ -592,6 +592,16 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
             app::KeyValues kv;
             auto set = [&kv](const std::string& k, const std::string& val) { kv.emplace_back(k, val); };
             a.add_panel(Kind::countrate);
+            set("channels", "15");   // with three coincidence countrates
+            set("coinc", "3");
+            set("coinc.0.channels", "3");    // 1+2 within 1 ns: the detectors on one laser pulse
+            set("coinc.0.window_ps", "1000");
+            set("coinc.1.channels", "3");    // 1+2 within 100 ps: they are 200 +- 43 ps apart
+            set("coinc.1.window_ps", "100");
+            set("coinc.2.channels", "5");    // 1+3 within 1 ns: channel 3 is Poisson, accidentals only
+            set("coinc.2.window_ps", "1000");
+            a.panels.back()->load(kv, "");
+            kv.clear();
             a.add_panel(Kind::counter);
             set("channels", "15");
             set("binwidth_ps", "10000000000");   // 10 ms
@@ -674,6 +684,54 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
             return true;
         });
     }
+    step("coincidence countrates: 1+2 within 1 ns and 100 ps, 1+3 accidentals", [=, &t] {
+        auto& cr = panel(0);
+        if (cr.capture_s() < 10.0) return false;
+        // Channels 1 and 2 fire on 10 % and 8 % of the 1 MHz laser pulses, 200 ps apart (sigma 25 and
+        // 35 ps): 8000 coincidences/s within 1 ns, 1 % of them (z = -2.33) within 100 ps.  Channel 3
+        // (Poisson, 50 k/s) and channel 1 coincide by chance only: the panel's accidental estimate.
+        const double r1 = metric(cr, "coinc_rate1"), r2 = metric(cr, "coinc_rate2"), r3 = metric(cr, "coinc_rate3");
+        const double acc1 = metric(cr, "coinc_accidental1"), acc3 = metric(cr, "coinc_accidental3");
+        char buf[300];
+        std::snprintf(buf, sizeof buf, "coincidences 1+2 < 1 ns %.0f/s (want 8000; accidental %.1f), < 100 ps %.1f/s (want 79), "
+                      "1+3 < 1 ns %.2f/s = accidental %.2f/s (%.0f counts)", r1, acc1, r2, r3, acc3, metric(cr, "coinc_counts3"));
+        t.expect(metric(cr, "coincidences") == 3 && metric(cr, "coinc_channel1") == 5 && metric(cr, "coinc_channel3") == 7,
+                 "three coincidence channels, numbered 5, 6, 7");
+        t.expect(std::fabs(r1 - 8000) < 600 && acc1 > 5 && acc1 < 40, buf);
+        t.expect(r2 > 30 && r2 < 160, buf);
+        t.expect(metric(cr, "coinc_counts3") > 40 && r3 > 0.6 * acc3 && r3 < 1.5 * acc3 && acc3 > 7 && acc3 < 13, buf);
+        return true;
+    }, 40);
+    step("Add coincidence countrate (button): coincidences of channels not shown", [=, &a, &t] {
+        static app::Panel* p = nullptr;
+        if (t.frames == 1) {
+            p = &a.add_panel(Kind::countrate);
+            p->load(app::KeyValues{{"channels", "8"}}, "");   // channel 4 only
+            a.focus = p->window_name();
+        }
+        if (t.frames == 6) {
+            const auto r = ui::g_probes["addcoinc_" + std::to_string(p->id())];
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddMousePosEvent((r.first.x + r.second.x) / 2, (r.first.y + r.second.y) / 2);
+            io.AddMouseButtonEvent(0, true);
+            io.AddMouseButtonEvent(0, false);
+        }
+        if (t.frames == 9) ImGui::GetIO().AddMousePosEvent(-1, -1);
+        if (t.frames == 11) {
+            t.expect(metric(*p, "edit_coincidences") == 1, "the button added a coincidence (default 1+2 within 1 ns)");
+            p->start(ctx(), true);
+        }
+        if (t.frames < 12 || p->capture_s() < 3.0) return false;
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "coincidence 1+2 %.0f/s (want 8000) with only channel 4 shown (%.0f/s)",
+                      metric(*p, "coinc_rate1"), metric(*p, "rate4"));
+        t.expect(std::fabs(metric(*p, "coinc_rate1") - 8000) < 800 && std::fabs(metric(*p, "rate4") - 1e6) < 2e4, buf);
+        t.expect(std::isnan(metric(*p, "rate1")) && std::isnan(metric(*p, "rate2")), "channels 1 and 2 not shown");
+        t.expect(metric(*p, "coinc_channel1") == 8, "its own virtual channel (8)");
+        t.shot("02b_countrate_coincidence.png");
+        p->stop(ctx());
+        return true;
+    }, 40);
     step("trigger change while measuring: the run restarts, data kept", [=, &a, &t] {
         if (t.frames == 1) a.dev.set_trigger(3, 0.3);
         if (t.elapsed() < 2.0) return false;
@@ -784,10 +842,17 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
         }
         for (const auto& p : paths) {
             std::ifstream in(p);
-            std::string line;
+            std::string line, text;
             int lines = 0;
-            while (std::getline(in, line)) ++lines;
+            while (std::getline(in, line)) {
+                ++lines;
+                text += line + "\n";
+            }
             t.expect(lines > 5, "CSV " + p + " has data (" + std::to_string(lines) + " lines)");
+            if (p == paths.front())
+                t.expect(text.find(",rate_coinc1_ch1+2_hz,rate_coinc2_ch1+2_hz,rate_coinc3_ch1+3_hz") != std::string::npos &&
+                             text.find("# coincidence 3: channels 1+3, window 1000 ps") != std::string::npos,
+                         "countrate CSV has the coincidence columns");
         }
         return true;
     });
@@ -949,6 +1014,9 @@ void build_selftest(SelfTest& t, App& a, app::AppContext*& ctx_ref, GLFWwindow* 
         const auto kv = app::read_kv(session_path());
         t.expect(app::kv_num(kv, "panels", 0) == static_cast<double>(a.panels.size()), "every panel in the session file");
         t.expect(app::kv_get(kv, "panel.4.kind") == "histogram2d" && app::kv_get(kv, "panel.4.projection") == "1", "panel settings saved");
+        t.expect(app::kv_get(kv, "panel.0.coinc") == "3" && app::kv_get(kv, "panel.0.coinc.1.window_ps") == "100" &&
+                     app::kv_get(kv, "panel.0.coinc.2.channels") == "5",
+                 "coincidence countrates saved");
         const auto ch = app::read_kv(app::config_dir() + "/channels.ini");
         t.expect(app::kv_get(ch, "trigger_v.3") == "0.30000", "channel settings persisted");
         return true;

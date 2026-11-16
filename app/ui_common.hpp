@@ -73,9 +73,11 @@ extern const char* kHysteresisHelp;
 // non-positive values are ignored there).  Set them for the plot being set
 // up: every frame with auto-fit, once without (the user zooms).
 void padded_limits(double lo, double hi, bool log, double& out_lo, double& out_hi);
-void setup_y_padded(double lo, double hi, bool log, bool autofit);
+// `axis`: the ImPlot axis (ImAxis_Y1 = 3 by default; ImAxis_Y2 = 4 for a
+// right-hand axis).
+void setup_y_padded(double lo, double hi, bool log, bool autofit, int axis = 3);
 // The same for a set of values (NaNs skipped; an empty set gives 0 ... 1).
-void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit);
+void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit, int axis = 3);
 
 // Plot time units: 0 auto, 1 ps, 2 ns, 3 µs, 4 ms, 5 s.
 extern const char* kUnits[6];

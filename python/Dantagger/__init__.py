@@ -16,6 +16,8 @@ Differences from Swabian (see README.md): channels are 1-4; negative
 warning; trigger levels must be within -0.100 .. +1.500 V; settings cannot
 change while a started measurement runs; the board streams only while a
 measurement runs; overflows are announced with banners that cannot be missed.
+Virtual channels: ``Coincidence`` / ``Coincidences`` (channels 5-31, the time of
+the last tag only).
 Dantagger-only: ``setHysteresis``, ``setHighResolution``,
 ``createSimulatedTagger``, ``createReplayTagger``.
 """
@@ -38,7 +40,7 @@ from ._dantagger import DeviceError, SettingsBusyError
 __all__ = [
     "createTimeTagger", "createSimulatedTagger", "createReplayTagger", "freeTimeTagger", "scanTimeTagger",
     "TimeTagger", "SynchronizedMeasurements", "Countrate", "Counter", "Correlation", "Histogram", "HistogramND",
-    "TimeTagStream", "TimeTagStreamBuffer", "Resolution", "ChannelEdge", "CHANNEL_UNUSED", "setHysteresis",
+    "TimeTagStream", "TimeTagStreamBuffer", "Coincidence", "Coincidences", "CoincidenceTimestamp", "Resolution", "ChannelEdge", "CHANNEL_UNUSED", "setHysteresis",
     "setHighResolution", "DeviceError", "SettingsBusyError", "setLogger", "getVersion",
 ]
 
@@ -46,6 +48,7 @@ __version__ = "0.1.0"
 CHANNEL_UNUSED = -134217728
 CHANNEL_UNUSED_OLD = -1   # name exists in old Swabian releases; never treated as a channel here
 NUM_CHANNELS = 4
+MAX_CHANNEL = 31          # virtual channels (Coincidence) are 5 .. 31
 
 # Swabian logger constants (setLogger is accepted; Dantagger prints its own warnings).
 LOGGER_ERROR, LOGGER_WARNING, LOGGER_INFO = 40, 30, 10
@@ -72,6 +75,21 @@ class ChannelEdge(enum.IntFlag):
     StandardAll = 32
     StandardRising = 64
     StandardFalling = 128
+
+
+class CoincidenceTimestamp(enum.IntEnum):
+    """Time of a coincidence tag (Swabian values).  Dantagger implements Last
+    (the default): the time of the tag that completes the coincidence."""
+    Last = 0
+    Average = 1
+    First = 2
+    ListedFirst = 3
+
+
+CoincidenceTimestamp_Last = CoincidenceTimestamp.Last
+CoincidenceTimestamp_Average = CoincidenceTimestamp.Average
+CoincidenceTimestamp_First = CoincidenceTimestamp.First
+CoincidenceTimestamp_ListedFirst = CoincidenceTimestamp.ListedFirst
 
 
 class TagType(enum.IntEnum):
@@ -222,12 +240,17 @@ def _int(value, what):
 _falling_warned = {}
 
 
-def _channel(ch, what="channel"):
-    """Dantagger channels are 1..4.  Negative (falling-edge) channels map to
-    the positive channel with a warning; the board has no falling-edge mode."""
+def _channel(ch, what="channel", tagger=None):
+    """Dantagger channels are 1..4, plus the virtual channels (5..31) that
+    exist on `tagger`.  Negative (falling-edge) channels map to the positive
+    channel with a warning; the board has no falling-edge mode."""
     c = _int(ch, what)
     if c == CHANNEL_UNUSED:
         raise ValueError(f"{what}: CHANNEL_UNUSED is not a channel here")
+    if NUM_CHANNELS < c <= MAX_CHANNEL and tagger is not None and tagger._t.has_channel(c):
+        return c
+    if c < -NUM_CHANNELS:
+        raise ValueError(f"{what} {ch}: a virtual channel has no falling edge")
     if c < 0:
         now = time.monotonic()
         last = _falling_warned.get(c)
@@ -241,15 +264,18 @@ def _channel(ch, what="channel"):
             _note(f"FALLING EDGES NOT SUPPORTED YET: channel {c} used as channel {-c}")
             _falling_warned[c] = now
         c = -c
+    if NUM_CHANNELS < c <= MAX_CHANNEL:
+        raise ValueError(f"{what} {ch} is not a virtual channel that exists (anymore): the TDC board has channels "
+                         f"1-{NUM_CHANNELS}, and virtual channels exist while their Coincidence object does")
     if not 1 <= c <= NUM_CHANNELS:
         raise ValueError(f"{what} {ch} does not exist: the TDC board has channels 1-{NUM_CHANNELS}")
     return c
 
 
-def _channels(chs, what="channel"):
+def _channels(chs, what="channel", tagger=None):
     if isinstance(chs, (int, np.integer)):
         chs = [chs]
-    return [_channel(c, what) for c in chs]
+    return [_channel(c, what, tagger) for c in chs]
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +553,10 @@ def _tagger_of(tagger):
     raise TypeError("expected a Dantagger TimeTagger (or SynchronizedMeasurements.getTagger())")
 
 
+def _real(tagger):
+    return _tagger_of(tagger)[0]
+
+
 def _wait(fn, timeout):
     """fn(slice_ms) -> bool; waits in slices so Ctrl+C works and warnings print."""
     timeout = -1 if timeout is None else float(timeout)
@@ -663,7 +693,7 @@ class Countrate(_Measurement):
     _kind = "Countrate"
 
     def __init__(self, tagger, channels):
-        chs = _channels(channels)
+        chs = _channels(channels, "channel", _real(tagger))
         self._config = {"channels": chs}
         self._init(tagger, lambda t, auto: _core.Countrate(t, chs, auto))
 
@@ -679,7 +709,7 @@ class Counter(_Measurement):
     _kind = "Counter"
 
     def __init__(self, tagger, channels, binwidth=1000000000, n_values=1):
-        chs = _channels(channels)
+        chs = _channels(channels, "channel", _real(tagger))
         bw, n = _ps(binwidth, "binwidth"), _int(n_values, "n_values")
         self._config = {"channels": chs, "binwidth": bw, "n_values": n}
         self._init(tagger, lambda t, auto: _core.Counter(t, chs, bw, n, auto))
@@ -702,8 +732,9 @@ class Correlation(_Measurement):
     _kind = "Correlation"
 
     def __init__(self, tagger, channel_1, channel_2=CHANNEL_UNUSED, binwidth=1000, n_bins=1000):
-        c1 = _channel(channel_1, "channel_1")
-        c2 = c1 if _int(channel_2, "channel_2") == CHANNEL_UNUSED else _channel(channel_2, "channel_2")
+        real = _real(tagger)
+        c1 = _channel(channel_1, "channel_1", real)
+        c2 = c1 if _int(channel_2, "channel_2") == CHANNEL_UNUSED else _channel(channel_2, "channel_2", real)
         bw, n = _ps(binwidth, "binwidth"), _int(n_bins, "n_bins")
         self._config = {"channel_1": c1, "channel_2": c2, "binwidth": bw, "n_bins": n}
         self._init(tagger, lambda t, auto: _core.Correlation(t, c1, c2, bw, n, auto))
@@ -723,8 +754,9 @@ class Histogram(_Measurement):
     _kind = "Histogram"
 
     def __init__(self, tagger, click_channel, start_channel=CHANNEL_UNUSED, binwidth=1000, n_bins=1000):
-        click = _channel(click_channel, "click_channel")
-        start = click if _int(start_channel, "start_channel") == CHANNEL_UNUSED else _channel(start_channel, "start_channel")
+        real = _real(tagger)
+        click = _channel(click_channel, "click_channel", real)
+        start = click if _int(start_channel, "start_channel") == CHANNEL_UNUSED else _channel(start_channel, "start_channel", real)
         bw, n = _ps(binwidth, "binwidth"), _int(n_bins, "n_bins")
         self._config = {"click_channel": click, "start_channel": start, "binwidth": bw, "n_bins": n}
         self._init(tagger, lambda t, auto: _core.Histogram(t, click, start, bw, n, auto))
@@ -741,8 +773,9 @@ class HistogramND(_Measurement):
     _kind = "HistogramND"
 
     def __init__(self, tagger, start_channel, stop_channels, binwidths, n_bins):
-        start = _channel(start_channel, "start_channel")
-        stops = _channels(stop_channels, "stop_channels")
+        real = _real(tagger)
+        start = _channel(start_channel, "start_channel", real)
+        stops = _channels(stop_channels, "stop_channels", real)
         bws = [_ps(b, "binwidths") for b in (binwidths if np.ndim(binwidths) else [binwidths])]
         ns = [_int(n, "n_bins") for n in (n_bins if np.ndim(n_bins) else [n_bins])]
         self._config = {"start_channel": start, "stop_channels": stops, "binwidths": bws, "n_bins": ns}
@@ -790,7 +823,7 @@ class TimeTagStream(_Measurement):
 
     def __init__(self, tagger, n_max_events, channels):
         n = _int(n_max_events, "n_max_events")
-        chs = _channels(channels)
+        chs = _channels(channels, "channel", _real(tagger))
         self._config = {"n_max_events": n, "channels": chs}
         self._init(tagger, lambda t, auto: _core.TimeTagStream(t, n, chs, auto))
 
@@ -807,6 +840,102 @@ class TimeTagStream(_Measurement):
 
 
 # ---------------------------------------------------------------------------
+# Virtual channels
+# ---------------------------------------------------------------------------
+class Coincidences:
+    """Virtual channels, one per group of channels: a tag on a group channel
+    makes a coincidence tag at its time when every other channel of the group
+    has its latest tag less than ``coincidenceWindow`` ps before it (the same
+    time included).  Count them with any measurement through
+    ``getChannels()``, e.g. ``Countrate(tagger, coinc.getChannels())``.
+
+    As Swabian (checked against Swabian 2.22.6): a group is the set of distinct
+    channels given; tags are never used up (1, 2, 2 within the window makes two
+    coincidences); window 0 never fires; inputs may be virtual channels.  The
+    virtual channels exist while this object does, numbered 5-31 (at most 27
+    at a time).  Dantagger differences: only ``CoincidenceTimestamp.Last``;
+    virtual channels run from creation (start()/stop() switch one on and
+    off; SynchronizedMeasurements does not start or stop them).  A coincidence
+    tag follows the tag that made it in the stream (as Swabian)."""
+    _kind = "Coincidences"
+
+    def __init__(self, tagger, coincidenceGroups, coincidenceWindow=1000, timestamp=CoincidenceTimestamp.Last):
+        real = _real(tagger)
+        if real._t.closed():
+            raise RuntimeError("the time tagger has been freed")
+        ts = CoincidenceTimestamp(int(timestamp))
+        if ts != CoincidenceTimestamp.Last:
+            raise NotImplementedError(f"CoincidenceTimestamp.{ts.name} is not implemented in Dantagger: coincidence "
+                                      "tags carry the time of the tag that completes them (CoincidenceTimestamp.Last)")
+        w = _ps(coincidenceWindow, "coincidenceWindow")
+        if w < 0:
+            raise ValueError("coincidence window cannot be less than zero.")
+        groups = [list(g) if np.ndim(g) else [g] for g in coincidenceGroups]
+        if not groups or any(len(g) == 0 for g in groups):
+            raise ValueError("one of the groups is empty")
+        groups = [_channels(g, "coincidence channel", real) for g in groups]
+        self._tagger = real
+        self._hs = []
+        for g in groups:
+            self._hs.append(_core.Coincidence(real._t, g, w))
+        self._config = {"groups": groups, "coincidenceWindow": w, "timestamp": ts.name}
+
+    def getChannels(self):
+        return [h.channel() for h in self._hs]
+
+    def setCoincidenceWindow(self, coincidenceWindow):
+        w = _ps(coincidenceWindow, "coincidenceWindow")
+        if w < 0:
+            raise ValueError("coincidence window cannot be less than zero.")
+        for h in self._hs:
+            h.set_window(w)
+        self._config["coincidenceWindow"] = w
+
+    def start(self):
+        for h in self._hs:
+            h.set_enabled(True)
+
+    def stop(self):
+        for h in self._hs:
+            h.set_enabled(False)
+
+    def clear(self):
+        """Forgets the tags seen so far (a coincidence then needs new tags on every channel)."""
+        for h in self._hs:
+            h.clear()
+
+    def abort(self):
+        self.stop()
+        self.clear()
+
+    def isRunning(self):
+        return any(h.enabled() for h in self._hs)
+
+    def getConfiguration(self):
+        return json.dumps({"name": self._kind, **self._config, "channels": self.getChannels()})
+
+    def __del__(self):
+        for h in getattr(self, "_hs", []):
+            try:
+                h.detach()
+            except Exception:
+                pass
+
+
+class Coincidence(Coincidences):
+    """One virtual channel of coincidences between ``channels`` (see
+    Coincidences): ``Countrate(tagger, [Coincidence(tagger, [1, 2], 1000).getChannel()])``
+    counts the coincidences of channels 1 and 2 within 1 ns."""
+    _kind = "Coincidence"
+
+    def __init__(self, tagger, channels, coincidenceWindow=1000, timestamp=CoincidenceTimestamp.Last):
+        super().__init__(tagger, [list(channels) if np.ndim(channels) else [channels]], coincidenceWindow, timestamp)
+
+    def getChannel(self):
+        return self._hs[0].channel()
+
+
+# ---------------------------------------------------------------------------
 # Swabian names that the scripts import but never use: present so the import
 # lines work; constructing one says it is not implemented.
 # ---------------------------------------------------------------------------
@@ -817,7 +946,7 @@ def _not_implemented(name):
     return type(name, (), {"__init__": __init__, "__doc__": f"Not implemented in Dantagger."})
 
 
-for _name in ("Combiner", "Coincidence", "Coincidences", "Combinations", "Scope", "Event", "TimeDifferences",
+for _name in ("Combiner", "Combinations", "Scope", "Event", "TimeDifferences",
               "TimeDifferencesND", "HistogramLogBins", "Histogram2D", "StartStop", "DelayedChannel",
               "GatedChannel", "FileWriter", "FileReader", "Dump", "Flim", "FrequencyCounter", "CountBetweenMarkers",
               "ConstantFractionDiscriminator", "EventGenerator", "TriggerOnCountrate", "Sampler",

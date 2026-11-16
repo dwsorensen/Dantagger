@@ -7,6 +7,7 @@
 #include "sim_backend.hpp"
 #include "tagger.hpp"
 #include "tdc_backend.hpp"
+#include "virtual_channels.hpp"
 
 #include "d3xx_common.hpp"
 #include "tdcctl/fake_fpga.hpp"
@@ -144,7 +145,8 @@ PYBIND11_MODULE(_dantagger, mod) {
         .def("deadtime_dropped", [](Tagger& t) { return t.engine().deadtime_dropped(); })
         .def("position", [](Tagger& t) { return t.engine().position(); })
         .def("error", [](Tagger& t) { return t.engine().error(); })
-        .def("explicit_running", [](Tagger& t) { return t.engine().explicit_running(); });
+        .def("explicit_running", [](Tagger& t) { return t.engine().explicit_running(); })
+        .def("has_channel", [](Tagger& t, int c) { return t.engine().channel_exists(c); });
 
     mod.def(
         "open_tdc",
@@ -352,6 +354,56 @@ PYBIND11_MODULE(_dantagger, mod) {
             return to_array(h.as<HistogramND>().index(dim));
         });
 
+    // ---- virtual channels --------------------------------------------------------
+    // A Coincidence as Python holds it: registered with the engine while the
+    // Python object lives (Swabian: the virtual channel exists as long as its
+    // object).
+    struct CoincidenceH {
+        std::shared_ptr<Tagger> tagger;
+        std::shared_ptr<Coincidence> v;
+        bool attached{false};
+        CoincidenceH(std::shared_ptr<Tagger> t, std::vector<int> channels, timestamp_t window)
+            : tagger(std::move(t)), v(std::make_shared<Coincidence>(std::move(channels), window)) {
+            if (tagger->closed()) throw std::runtime_error("the time tagger has been freed");
+            tagger->engine().add_virtual(v);
+            attached = true;
+        }
+        ~CoincidenceH() { detach(); }
+        CoincidenceH(const CoincidenceH&) = delete;
+        CoincidenceH& operator=(const CoincidenceH&) = delete;
+        void detach() {
+            if (attached && tagger && !tagger->closed()) tagger->engine().remove_virtual(v.get());
+            attached = false;
+        }
+    };
+    py::class_<CoincidenceH>(mod, "Coincidence")
+        .def(py::init([](std::shared_ptr<Tagger> t, std::vector<int> channels, timestamp_t window) {
+            return new CoincidenceH(std::move(t), std::move(channels), window);
+        }))
+        .def("channel", [](CoincidenceH& h) { return h.v->channel(); })
+        .def("channels", [](CoincidenceH& h) { return h.v->channels(); })
+        .def("window", [](CoincidenceH& h) {
+            std::lock_guard<std::mutex> g(h.tagger->engine().mutex());
+            return h.v->window();
+        })
+        .def("set_window", [](CoincidenceH& h, timestamp_t w) {
+            std::lock_guard<std::mutex> g(h.tagger->engine().mutex());
+            h.v->set_window(w);
+        })
+        .def("set_enabled", [](CoincidenceH& h, bool on) {
+            std::lock_guard<std::mutex> g(h.tagger->engine().mutex());
+            if (on && !h.v->enabled) h.v->on_gap();   // no memory of tags from before the stop
+            h.v->enabled = on;
+        })
+        .def("enabled", [](CoincidenceH& h) {
+            std::lock_guard<std::mutex> g(h.tagger->engine().mutex());
+            return h.v->enabled;
+        })
+        .def("clear", [](CoincidenceH& h) {
+            std::lock_guard<std::mutex> g(h.tagger->engine().mutex());
+            h.v->on_gap();
+        })
+        .def("detach", &CoincidenceH::detach);
     py::class_<StreamBuffer>(mod, "StreamBuffer")
         .def("timestamps", [](const StreamBuffer& b) { return to_array(b.timestamps); })
         .def("channels", [](const StreamBuffer& b) { return to_array(b.channels); })

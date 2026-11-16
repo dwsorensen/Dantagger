@@ -25,7 +25,7 @@ protected:
         bool operator==(const Settings& o) const { return mask == o.mask && binwidth_ps == o.binwidth_ps && n_values == o.n_values; }
     };
 
-    std::shared_ptr<dt::Measurement> make() override {
+    std::shared_ptr<dt::Measurement> make(dt::Tagger&) override {
         std::vector<int> chans;
         for (int c = 1; c <= 4; ++c)
             if ((edit_.mask >> (c - 1)) & 1U) chans.push_back(c);
