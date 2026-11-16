@@ -109,3 +109,54 @@ def test_against_swabian(stream):
         assert np.array_equal(m["ctr"].getIndex(), want_idx)
     finally:
         DT.freeTimeTagger(tagger)
+
+
+# Coincidence virtual channels: groups (Dantagger channels) and windows; the
+# last one reads the first virtual channel ("chain").
+COINC = [([1, 2], 3000), ([4, 1], 2500), ([1, 2, 3], 6000), ([3, 4], 1), ([2, 4], 1500), ([3, 3], 1000), ("chain", 4000)]
+
+
+@pytest.mark.parametrize("stream", [("random", 31), ("dense", 32)])
+def test_coincidence_against_swabian(stream):
+    kind, seed = stream
+    per = (random_stream if kind == "random" else dense_stream)(seed, n=3000, span=1_000_000_000)
+    end = 1_200_000_000
+
+    def build(vt, ch):
+        T = swabian()
+        co = []
+        for g, w in COINC:
+            chans = [co[0].getChannel(), ch(4)] if g == "chain" else [ch(c) for c in g]
+            co.append(T.Coincidence(vt, chans, w))
+        vch = [c.getChannel() for c in co]
+        return {"co": co, "vch": vch, "s": T.TimeTagStream(vt, 10**6, vch), "cr": T.Countrate(vt, vch)}
+
+    def extract(o):
+        b = o["s"].getData()
+        return {"t": b.getTimestamps().copy(), "c": b.getChannels().copy(), "vch": o["vch"],
+                "counts": o["cr"].getCountsTotal().copy()}
+
+    sw = OracleRun(per, build, extract, end_ps=end)
+    r = sw.results
+    tagger = DT.createReplayTagger(sw.times, sw.channels)
+    try:
+        co = []
+        for g, w in COINC:
+            co.append(DT.Coincidence(tagger, [co[0].getChannel(), 4] if g == "chain" else g, w))
+        vch = [c.getChannel() for c in co]
+        sync = DT.SynchronizedMeasurements(tagger)
+        s = DT.TimeTagStream(sync.getTagger(), 10**6, vch)
+        sync.startFor(end)
+        assert sync.waitUntilFinished(30000)
+        b = s.getData()
+        got_t, got_c = b.getTimestamps(), b.getChannels()
+        total = 0
+        for k in range(len(COINC)):
+            want = r["t"][r["c"] == r["vch"][k]]
+            want = want[want < end]
+            got = got_t[got_c == vch[k]]
+            assert np.array_equal(got, want), COINC[k]
+            total += len(want)
+        assert total > 300
+    finally:
+        DT.freeTimeTagger(tagger)

@@ -7,6 +7,7 @@
 
 #include "engine.hpp"
 #include "measurements.hpp"
+#include "virtual_channels.hpp"
 #include "merger.hpp"
 #include "record_decoder.hpp"
 #include "sim_backend.hpp"
@@ -205,11 +206,18 @@ void bench_decoder(const Stream& s) {
 }
 
 // End to end: ReplayBackend -> engine queue -> merger -> dispatch, as fast as possible.
+// `coincidences`: Coincidence virtual channels (1 ns) registered first, as channels 5, 6, ...
 void bench_end_to_end(const char* name, const Stream& s,
                       const std::function<std::vector<std::shared_ptr<Measurement>>()>& make,
-                      std::array<timestamp_t, kNumChannels> delays = {}) {
+                      std::array<timestamp_t, kNumChannels> delays = {},
+                      const std::vector<std::vector<int>>& coincidences = {}) {
     Tagger tagger(std::make_unique<ReplayBackend>(s.t, s.ch, -1.0));
     for (int c = 0; c < kNumChannels; ++c) tagger.set_delay(c + 1, delays[static_cast<std::size_t>(c)]);
+    std::vector<std::shared_ptr<Coincidence>> virtuals;
+    for (const auto& g : coincidences) {
+        virtuals.push_back(std::make_shared<Coincidence>(g, 1000));
+        tagger.engine().add_virtual(virtuals.back());
+    }
     auto ms = make();
     std::vector<Measurement*> raw;
     for (auto& m : ms) {
@@ -309,5 +317,8 @@ int main() {
     bench_end_to_end("ttCountRate: Countrate only", s, [] {
         return std::vector<std::shared_ptr<Measurement>>{std::make_shared<Countrate>(std::vector<int>{1})};
     });
+    bench_end_to_end("Countrate 1-4 + coincidences 1+2, 1+4, 1+2+4", s, [] {
+        return std::vector<std::shared_ptr<Measurement>>{std::make_shared<Countrate>(std::vector<int>{1, 2, 3, 4, 5, 6, 7})};
+    }, {0, 0, 0, 0}, {{1, 2}, {1, 4}, {1, 2, 4}});
     return 0;
 }

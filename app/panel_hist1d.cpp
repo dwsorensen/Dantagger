@@ -347,7 +347,7 @@ public:
     }
 
 protected:
-    std::shared_ptr<dt::Measurement> make() override {
+    std::shared_ptr<dt::Measurement> make(dt::Tagger&) override {
         return std::make_shared<dt::Histogram>(edit_.a, edit_.b, static_cast<dt::timestamp_t>(edit_.binwidth_ps), edit_.n_bins);
     }
     const char* a_label() const override { return "Click"; }
@@ -411,7 +411,7 @@ public:
     }
 
 protected:
-    std::shared_ptr<dt::Measurement> make() override {
+    std::shared_ptr<dt::Measurement> make(dt::Tagger&) override {
         return std::make_shared<dt::Correlation>(edit_.a, edit_.b, static_cast<dt::timestamp_t>(edit_.binwidth_ps), edit_.n_bins);
     }
     const char* a_label() const override { return "Channel 1"; }

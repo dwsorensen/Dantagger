@@ -17,6 +17,7 @@ One package with three faces over one C++ core:
 FT601 (D3XX) ─ host/  tdcctl library: transport, protocol, session, calibration, simulated FPGA
             └─ core/  TdcBackend (both releases) → RecordDecoder → Merger → Engine → measurements
                       Countrate · Counter · Histogram · Correlation · HistogramND · TimeTagStream
+                      virtual channels: Coincidence (channels 5-31, counted by any measurement)
                       FileBackend (saved tag streams) · StreamRecorder (raw record files)
      ├─ python/Dantagger   pybind11 module + the Swabian-style API
      └─ app/               Dear ImGui (docking) + ImPlot app, links the core directly
@@ -105,7 +106,16 @@ Every panel has:
 - Settings (applied on Start, or *Apply* while running, which clears), the
   shared channel table, and the view:
   - **Countrate**: rate tiles (counts / capture, Swabian), spread, rate
-    history plot, CSV.
+    history plot, CSV. **Add coincidence countrate** (up to 8): the
+    coincidences per second of the chosen channels (two or more) within a
+    window, as a tile (with the accidental rate the inputs' rates imply,
+    `Σᵢ Rᵢ ∏ⱼ≠ᵢ (1 − e^(−Rⱼ·W))`) and a line in the history plot, on its own
+    right-hand axis by default (*coincidence axis*). A coincidence is a tag on
+    one of the channels while every other one had a tag less than the window
+    before it (Swabian `Coincidence`, below). Its channels need not be shown;
+    the input delays apply first. Each is a virtual channel of the board
+    (27 at a time over all panels); a warning says when one counts nothing
+    although its channels count (window too narrow for their offset).
   - **Counter**: rolling trace per channel, counts or rate, statistics per
     channel (last, mean, std, min, max, var/mean — 1 for Poisson), hover
     readout, CSV.
@@ -178,9 +188,34 @@ README; `docs/SWABIAN_API_USAGE.md`, `docs/GAMEPLAN.md`), with these changes
   `Counter` bin of the window length then never completed; seen in the
   tomography flow test).
 
+**Coincidences** (2026-11-16): `Coincidence(tagger, channels,
+coincidenceWindow=1000)` and `Coincidences(tagger, groups, window)` are
+Swabian's virtual channels; count them with any measurement through
+`getChannel()` / `getChannels()`:
+
+```python
+c = TimeTagger.Coincidence(tagger, [1, 2], coincidenceWindow=1000)   # 1 ns
+rate = TimeTagger.Countrate(sync.getTagger(), [1, 2, c.getChannel()])
+```
+
+A tag on a group channel makes a coincidence tag at its time when every other
+group channel's latest tag is less than the window before it (the same time
+counts; exactly the window does not). Nothing is used up (1, 2, 2 within the
+window: two coincidences); a group is the set of its channels; window 0 never
+fires; groups may contain virtual channels. The tag follows the tag that made
+it in the stream. All of this was measured on Swabian 2.22.6 (virtual tagger)
+and is checked bit for bit against it (`tests/oracle`, random and dense
+streams, chained groups). Differences: only `CoincidenceTimestamp.Last` (the
+others raise `NotImplementedError`); virtual channels run from creation
+(`start()` / `stop()` switch one; `SynchronizedMeasurements` does not); a
+new board run or an overflow clears their memory; numbers 5-31, at most 27 at
+a time, freed with the object (`setInputDelay` etc. stay 1-4).
+
 `import TimeTagger` → Dantagger: `switch/` and `tools/install_timetagger_hook.py`
-point at *this* package. The SDE venv's switch was reinstalled from here on
-2026-11-05, and `SDE/Dantagger` was removed.
+point at *this* package. The SDE venv's switch pointed here from 2026-11-05
+(when `SDE/Dantagger` was removed) until it was uninstalled on 2026-11-06:
+`import TimeTagger` there is Swabian again. Toggle it with
+`tools/install_timetagger_hook.py [--uninstall]`.
 
 ## USB buffering
 

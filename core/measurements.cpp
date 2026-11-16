@@ -34,12 +34,12 @@ void check_bins(timestamp_t binwidth, std::int64_t n_bins, const char* what) {
 // ---------------------------------------------------------------------------
 Countrate::Countrate(std::vector<int> channels) : channels_(std::move(channels)) {
     if (channels_.empty()) throw std::invalid_argument("Countrate: no channels given");
-    for (int c : channels_) check_channel(c);
+    for (int c : channels_) check_tag_channel(c);
 }
 
 void Countrate::process(const timestamp_t*, const std::int8_t* ch, std::size_t n, timestamp_t, timestamp_t) {
     // Four interleaved counter sets keep consecutive increments independent.
-    std::int64_t c[4][kNumChannels + 1] = {};
+    std::int64_t c[4][kChannelSlots] = {};
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
         ++c[0][ch[i]];
@@ -48,7 +48,7 @@ void Countrate::process(const timestamp_t*, const std::int8_t* ch, std::size_t n
         ++c[3][ch[i + 3]];
     }
     for (; i < n; ++i) ++c[0][ch[i]];
-    for (int k = 1; k <= kNumChannels; ++k) counts_[static_cast<std::size_t>(k)] += c[0][k] + c[1][k] + c[2][k] + c[3][k];
+    for (int k = 1; k <= kMaxChannel; ++k) counts_[static_cast<std::size_t>(k)] += c[0][k] + c[1][k] + c[2][k] + c[3][k];
 }
 
 void Countrate::clear_data() { counts_.fill(0); }
@@ -75,7 +75,7 @@ std::vector<std::int64_t> Countrate::counts_total() const {
 Counter::Counter(std::vector<int> channels, timestamp_t binwidth, int n_values)
     : channels_(std::move(channels)), binwidth_(binwidth), n_values_(n_values) {
     if (channels_.empty()) throw std::invalid_argument("Counter: no channels given");
-    for (int c : channels_) check_channel(c);
+    for (int c : channels_) check_tag_channel(c);
     if (binwidth_ <= 0) throw std::invalid_argument("Counter: binwidth must be > 0 ps");
     if (n_values_ <= 0 || n_values_ > 100000000) throw std::invalid_argument("Counter: n_values must be 1 .. 1e8");
     ring_.assign(channels_.size() * static_cast<std::size_t>(n_values_), 0);
@@ -93,7 +93,9 @@ void Counter::complete_until(std::int64_t bin) {
             ring_[s * static_cast<std::size_t>(n_values_) + pos] = sat32(v);
             total_[s] += static_cast<std::uint64_t>(v);
         }
-        current_.fill(0);
+        // Only this counter's channels (other channels' entries are never read):
+        // clearing all kChannelSlots per bin cost 3x with 1 us bins.
+        for (int c : channels_) current_[static_cast<std::size_t>(c)] = 0;
         ++completed_;
     }
     // Empty bins up to `bin`.
@@ -176,8 +178,8 @@ std::vector<std::uint64_t> Counter::total_counts() const { return total_; }
 // ---------------------------------------------------------------------------
 Histogram::Histogram(int click_channel, int start_channel, timestamp_t binwidth, int n_bins)
     : click_(click_channel), start_(start_channel), binwidth_(binwidth) {
-    check_channel(click_);
-    check_channel(start_);
+    check_tag_channel(click_);
+    check_tag_channel(start_);
     check_bins(binwidth, n_bins, "Histogram");
     range_ = binwidth * n_bins;
     div_ = FastDiv(binwidth);
@@ -229,8 +231,8 @@ std::vector<timestamp_t> Histogram::index() const {
 // ---------------------------------------------------------------------------
 Correlation::Correlation(int channel_1, int channel_2, timestamp_t binwidth, int n_bins)
     : c1_(channel_1), c2_(channel_2), binwidth_(binwidth), n_bins_(n_bins) {
-    check_channel(c1_);
-    check_channel(c2_);
+    check_tag_channel(c1_);
+    check_tag_channel(c2_);
     check_bins(binwidth, n_bins, "Correlation");
     origin_ = -(binwidth * n_bins) / 2;
     hi_ = origin_ + binwidth * n_bins;
@@ -314,13 +316,13 @@ std::vector<timestamp_t> Correlation::index() const {
 HistogramND::HistogramND(int start_channel, std::vector<int> stop_channels, std::vector<timestamp_t> binwidths,
                          std::vector<int> n_bins)
     : start_(start_channel), stops_(std::move(stop_channels)), binwidths_(std::move(binwidths)), n_bins_(std::move(n_bins)) {
-    check_channel(start_);
+    check_tag_channel(start_);
     if (stops_.empty() || stops_.size() > 8) throw std::invalid_argument("HistogramND: 1 to 8 stop channels");
     if (binwidths_.size() != stops_.size() || n_bins_.size() != stops_.size())
         throw std::invalid_argument("HistogramND: stop_channels, binwidths and n_bins must have the same length");
     std::int64_t total = 1;
     for (std::size_t k = 0; k < stops_.size(); ++k) {
-        check_channel(stops_[k]);
+        check_tag_channel(stops_[k]);
         check_bins(binwidths_[k], n_bins_[k], "HistogramND");
         ranges_.push_back(binwidths_[k] * n_bins_[k]);
         divs_.emplace_back(binwidths_[k]);
@@ -338,7 +340,7 @@ void HistogramND::process(const timestamp_t* t, const std::int8_t* ch, std::size
     const std::int8_t start = static_cast<std::int8_t>(start_);
     // Diagnostics in locals (stored once per call): members would alias the histogram writes.
     std::uint64_t starts = 0, abandoned = 0, outside = 0;
-    std::uint64_t stop_tags[kNumChannels + 1] = {};
+    std::uint64_t stop_tags[kChannelSlots] = {};
     for (std::size_t i = 0; i < n; ++i) {
         const std::int8_t c = ch[i];
         const timestamp_t tt = t[i];
@@ -375,7 +377,7 @@ void HistogramND::process(const timestamp_t* t, const std::int8_t* ch, std::size
     stats_.starts += starts;
     stats_.abandoned += abandoned;
     stats_.outside += outside;
-    for (int c = 1; c <= kNumChannels; ++c) stats_.stop_tags[static_cast<std::size_t>(c)] += stop_tags[c];
+    for (int c = 1; c <= kMaxChannel; ++c) stats_.stop_tags[static_cast<std::size_t>(c)] += stop_tags[c];
 }
 
 void HistogramND::clear_data() {
@@ -403,7 +405,7 @@ std::vector<timestamp_t> HistogramND::index(int dim) const {
 TimeTagStream::TimeTagStream(std::size_t n_max_events, std::vector<int> channels) : n_max_(n_max_events) {
     if (n_max_ == 0) throw std::invalid_argument("TimeTagStream: n_max_events must be > 0");
     for (int c : channels) {
-        check_channel(c);
+        check_tag_channel(c);
         wanted_[static_cast<std::size_t>(c)] = true;
     }
 }

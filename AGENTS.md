@@ -17,6 +17,16 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 
 ## User instructions
 
+- 2026-11-16: "add the ability to track coincidences between channels" in
+  the Countrate panel: an **"Add coincidence countrate"** button adds a
+  tracker of coincidences per second, plotted with the other countrates; the
+  user picks the channels and a window in ps; a coincidence is a tag on one
+  channel within the window of a tag on the other; "if [not in] the python
+  library as a measurement class ... do so"; **the coincidence's channels
+  need not be active in the countrate measurement**; "verify, then merge and
+  push to remote". Done on branch `coincidence-countrate`, merged into
+  `main` and pushed (see Decisions, "Coincidences").
+
 - 2026-11-16: GitHub remote `origin` = `git@github.com:dwsorensen/Dantagger.git`
   (**public** repository; SSH key `~/.ssh/id_ed25519` is the user's
   account). Default branch renamed `master` -> `main`. Push only when asked.
@@ -212,16 +222,39 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
   Back / Reset zoom restore bin widths and delays (in memory, not in the
   session file).
 
-## Status (2026-10-22)
+- **Coincidences (2026-11-16).** Swabian `Coincidence` / `Coincidences` as
+  virtual channels (`core/virtual_channels.hpp`), not a separate measurement,
+  so every measurement can count them (Countrate, Counter, Correlation,
+  Histogram, HistogramND, TimeTagStream) and Python scripts use the Swabian
+  API. The engine runs the registered virtual channels over each merged
+  block (before dispatch, engine mutex; nothing when none exist), in
+  registration order, and inserts each tag **right after the tag that made
+  it** (Swabian's order; sorting equal times by channel number broke chained
+  coincidences on tied tags, found by the dense oracle stream). Semantics
+  measured on Swabian 2.22.6 (14 hand cases + random/dense oracle streams):
+  latest tag of every other group channel within `t - tag < window`
+  (strict; same time counts); nothing used up; group = set; window 0 never
+  fires. Channels 5-31 (`kMaxChannel`; measurement arrays are
+  `kChannelSlots` = 32), lowest free number, never one still read by another
+  virtual channel; a new run or an OverflowBegin clears the memory; only
+  `CoincidenceTimestamp.Last`; start/stop switch one on/off, not part of
+  SynchronizedMeasurements. App: the Countrate panel always counts 1-4
+  (tiles show the chosen ones; accidental estimate `Σ R_i ∏ (1 - e^-R_j W)`
+  from them) plus one virtual channel per coincidence (max 8 per panel);
+  `Panel::make(dt::Tagger&)` creates them on the tagger the panel runs on
+  (live or file replay) and `adopt_edited()` swaps them with the old ones;
+  coincidences on a right-hand axis by default.
+
+## Status (2026-11-16)
 
 | Part | State |
 |---|---|
 | Copy, provenance, build (`build.py`) | Done; `docs/PROVENANCE.md`, `docs/copied_sha256.txt` |
 | Host library tests (TDC_Firmware) | 166 checks PASS (also ASan/UBSan), with compact records (packer/expander round trip, bad streams, frames, FakeFpga runs, refusals) |
-| Core C++ tests | 4,450,725 checks PASS (also ASan/UBSan): release-3 (compact and 64-bit), release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
-| Python tests | 27 PASS, bit-exact against Swabian (oracle) |
-| Benchmarks | as SDE/Dantagger within noise: end to end tomography set 55-59 M tags/s, HistogramND 360-372, decoder 85-99 M records/s (noisy) |
-| App | `build/app/dantagger`; `--selftest` 27 steps PASS, screenshots; `--snapshot` works against the simulator |
+| Core C++ tests | 4,493,882 checks PASS (also ASan/UBSan): coincidence virtual channels (chunking invariance, run gap and overflow resets, numbering), release-3 (compact and 64-bit), release-2 and release-1 policy frames on the simulated FPGA, windows across run gaps, recorder -> file backend round trip (from run start, joined mid-run, time limit) |
+| Python tests | 39 PASS, bit-exact against Swabian (oracle), coincidences included (`tests/test_coincidence.py`, oracle `test_coincidence_against_swabian`) |
+| Benchmarks | as SDE/Dantagger within noise: end to end tomography set 55-59 M tags/s, HistogramND 360-372, decoder 85-99 M records/s (noisy). 2026-11-16 against `main` side by side: equal within noise except HistogramND 4 ps ~7 % lower, also with HistogramND's code reverted (code placement, not the change); Countrate 1-4 + 3 coincidences end to end ~28 M tags/s (loaded PC) |
+| App | `build/app/dantagger`; `--selftest` 29 steps PASS (coincidences: 1+2 at 8 k/s within 1 ns, ~80/s within 100 ps, 1+3 at the accidental estimate, the Add button with channels 1 and 2 hidden), screenshots; `--snapshot` works against the simulator |
 | Hardware | Release 2 on the board 2026-10-22: calibrated 250 MHz DDR, link ~28 M records/s, 23.35 M tags/s live with 0 dropped (TDC_Firmware `project_1/results/2026-10-22-release2-hw/`) |
 | Release 3 | **Built and verified 2026-10-23, packaged** in TDC_Firmware `releases/release-3/` (tag `release-3`; BIN `ecc9ff7f…bad97f`): every build gate, full bench, RTL -> host cross-check with `build/rtl_frames` (271 frames, 33 compact, 0 failures), mutation 67/67. Host support here. **Not yet on the board** (open item 8) |
 
@@ -283,6 +316,12 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 - 2026-10-22: a Vivado build here can be killed by Claude Code's low-memory
   reaper (swap nearly full with the user's programs open); it is not a build
   failure. Check `free -m` first and do not restart it without asking.
+- 2026-11-16: compare benchmarks against a build of `main` in a worktree
+  (scratchpad), alternating runs; the PC's load moves single runs by 20 %+.
+  A per-bin `fill()` of a channel-indexed array was a real 3x (Counter, 1 us
+  bins) once the array grew to 32 channels; clear only the channels in use.
+- 2026-11-16: doc edits by script must assert that the old text was found
+  (a silent `str.replace` miss left the README's switch note stale).
 
 ## Change log
 
@@ -326,3 +365,8 @@ TDC-GPX2 daughterboard; firmware in `../FPGA/TDC_Firmware`), combining:
 - 2026-11-16: GitHub remote added (dwsorensen/Dantagger), branch renamed
   to `main`, first push (user request). `artifacts/.check/` (browser
   profile from the page checks) is ignored.
+- 2026-11-16: Coincidences: `Coincidence` / `Coincidences` virtual channels
+  in the core, Python (Swabian API, oracle-checked) and the app's Countrate
+  panel ("Add coincidence countrate", accidental estimate, right-hand axis,
+  CSV, session); `Panel::make(dt::Tagger&)`; tests (C++, Python reference
+  and oracle, self-test steps); benchmark line. README stale switch note fixed.

@@ -21,7 +21,7 @@ struct KindInfo {
     const char* summary;
 };
 const KindInfo kKindInfo[kKinds] = {
-    {"Countrate", "countrate", "average count rate per channel over the capture (Swabian Countrate)"},
+    {"Countrate", "countrate", "average count rate per channel and of coincidences over the capture (Swabian Countrate)"},
     {"Counter", "counter", "counts per time bin, a rolling trace per channel (Swabian Counter)"},
     {"Histogram", "histogram", "START -> click time differences, multi start / multi stop (Swabian Histogram)"},
     {"Correlation", "correlation", "time differences between two channels, both signs (Swabian Correlation)"},
@@ -110,7 +110,7 @@ bool Panel::startable(const AppContext& ctx, std::string* why) const {
 void Panel::replace_measurement(AppContext& ctx) {
     auto live = ctx.dev.tagger();
     if (!live) throw std::runtime_error("not connected");
-    auto m = make();   // validates the settings first
+    auto m = make(*live);   // validates the settings first
     detach();
     tagger_ = live;
     m_ = std::move(m);
@@ -131,16 +131,18 @@ void Panel::start(AppContext& ctx, bool clear) {
     try {
         const dt::timestamp_t duration = run_s > 0 ? static_cast<dt::timestamp_t>(std::llround(run_s * 1e12)) : -1;
         if (use_file) {
-            auto m = make();
-            detach();
             auto fb = std::make_unique<dt::FileBackend>(file_path);
-            file_backend_ = fb.get();
-            tagger_ = std::make_shared<dt::Tagger>(std::move(fb), dt::SettingsPolicy::restart);
+            dt::FileBackend* fbp = fb.get();
+            auto replay = std::make_shared<dt::Tagger>(std::move(fb), dt::SettingsPolicy::restart);
             const auto& ch = ctx.dev.channels();
             for (int c = 1; c <= dt::kNumChannels; ++c) {   // the shared software settings apply to replays too
-                tagger_->set_delay(c, ch.delay_ps[static_cast<std::size_t>(c - 1)]);
-                tagger_->set_deadtime(c, ch.deadtime_ps[static_cast<std::size_t>(c - 1)]);
+                replay->set_delay(c, ch.delay_ps[static_cast<std::size_t>(c - 1)]);
+                replay->set_deadtime(c, ch.deadtime_ps[static_cast<std::size_t>(c - 1)]);
             }
+            auto m = make(*replay);   // validates the settings (the replay closes again if they are wrong)
+            detach();
+            file_backend_ = fbp;
+            tagger_ = std::move(replay);
             m_ = std::move(m);
             adopt_edited();
             tagger_->engine().add(m_, false);
@@ -522,7 +524,7 @@ bool channel_combo(const char* id, int* channel, float width) {
     return changed;
 }
 
-bool channel_checks(const char* id, unsigned* mask) {
+bool channel_checks(const char* id, unsigned* mask, int min_on) {
     ImGui::PushID(id);
     bool changed = false;
     for (int c = 0; c < 4; ++c) {
@@ -533,7 +535,7 @@ bool channel_checks(const char* id, unsigned* mask) {
         ImGui::PushStyleColor(ImGuiCol_CheckMark, ui::channel_colour(c + 1));
         if (ImGui::Checkbox(label, &on)) {
             const unsigned next = on ? (*mask | (1U << c)) : (*mask & ~(1U << c));
-            if (next != 0) {
+            if (__builtin_popcount(next) >= min_on) {
                 *mask = next;
                 changed = true;
             }

@@ -102,3 +102,42 @@ def histogram_nd(t, ch, start, stops, binwidths, n_bins):
             hist[flat] += 1
             active = False
     return hist
+
+
+
+def coincidence_at(t, ch, channels, window):
+    """Swabian Coincidence (CoincidenceTimestamp.Last): the stream positions
+    of the tags on a channel of the group (the set of `channels`) for which
+    every other group channel has an earlier tag in the stream less than
+    `window` before it.  Each tag counts once, nothing is used up."""
+    group = list(dict.fromkeys(int(c) for c in channels))
+    idx = np.arange(len(t))
+    pos = {c: idx[ch == c] for c in group}
+    out = []
+    for i in idx[np.isin(ch, group)]:
+        if window <= 0:
+            continue
+        ok = True
+        for j in group:
+            if j == ch[i]:
+                continue
+            k = np.searchsorted(pos[j], i) - 1   # the latest tag of j before tag i
+            if k < 0 or t[i] - t[pos[j][k]] >= window:
+                ok = False
+                break
+        if ok:
+            out.append(i)
+    return np.array(out, dtype=np.int64)
+
+
+def coincidence(t, ch, channels, window):
+    """The times of the coincidence tags (see coincidence_at)."""
+    return t[coincidence_at(t, ch, channels, window)]
+
+
+def insert_after(t, ch, positions, channel):
+    """The stream with a tag on `channel` right after each tag at `positions`
+    (same time): where Swabian puts a virtual channel's tags."""
+    t2 = np.insert(t, np.asarray(positions, dtype=np.int64) + 1, t[positions])
+    c2 = np.insert(ch, np.asarray(positions, dtype=np.int64) + 1, channel)
+    return t2, c2

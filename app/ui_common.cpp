@@ -332,13 +332,15 @@ void padded_limits(double lo, double hi, bool log, double& out_lo, double& out_h
     out_hi = hi + kPad * span;
 }
 
-void setup_y_padded(double lo, double hi, bool log, bool autofit) {
+static_assert(ImAxis_Y1 == 3 && ImAxis_Y2 == 4, "setup_y_padded's default axis");
+
+void setup_y_padded(double lo, double hi, bool log, bool autofit, int axis) {
     double a, b;
     padded_limits(lo, hi, log, a, b);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, a, b, autofit ? ImPlotCond_Always : ImPlotCond_Once);
+    ImPlot::SetupAxisLimits(axis, a, b, autofit ? ImPlotCond_Always : ImPlotCond_Once);
 }
 
-void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit) {
+void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit, int axis) {
     double lo = INFINITY, hi = -INFINITY;
     for (std::size_t i = 0; i < n; ++i) {
         const double v = values[i];
@@ -347,7 +349,7 @@ void setup_y_padded(const double* values, std::size_t n, bool log, bool autofit)
         hi = std::max(hi, v);
     }
     if (lo > hi) lo = hi = NAN;
-    setup_y_padded(lo, hi, log, autofit);
+    setup_y_padded(lo, hi, log, autofit, axis);
 }
 
 const char* kUnits[6] = {"auto", "ps", "ns", "µs", "ms", "s"};

@@ -11,10 +11,14 @@
 // exactly d ps of captured time (time between runs does not count).  Synchronized groups are changed atomically
 // (one mutex covers block dispatch and every control call), so they share
 // their window edges exactly.
+//
+// Virtual channels (virtual_channels.hpp) run over every block before the
+// measurements, under the same mutex: their tags are merged into the block.
 
 #include "common.hpp"
 #include "measurement.hpp"
 #include "merger.hpp"
+#include "virtual_channels.hpp"
 #include "warnings.hpp"
 
 #include <atomic>
@@ -68,6 +72,15 @@ public:
     bool wait(const std::vector<Measurement*>& ms, int timeout_ms);
     bool any_running(const std::vector<Measurement*>& ms);
 
+    // ---- virtual channels (any thread) --------------------------------------------
+    // Registers `v` under a free virtual channel number (kNumChannels + 1 ..
+    // kMaxChannel) and returns it.  Its inputs must be channels 1-4 or virtual
+    // channels registered before it.  It starts with no past (on_gap).
+    int add_virtual(const std::shared_ptr<VirtualChannel>& v);
+    void remove_virtual(VirtualChannel* v);
+    // An input (1-4) or a registered virtual channel.
+    bool channel_exists(int channel);
+
     bool demand();             // any measurement running
     // Lock-free version (atomic count kept up to date under the mutex).
     bool demand_fast() const { return n_running_.load() > 0 && !failed_.load(); }
@@ -88,11 +101,16 @@ private:
     void watch(const TagBlock& block);
     void notify_demand();
     void recount_locked();   // updates n_running_ (mu_ held)
+    void apply_virtuals(TagBlock& block);   // mu_ held
 
     WarningLog& log_;
     std::mutex mu_;                       // measurements + their data
     std::condition_variable finished_cv_;
     std::vector<std::shared_ptr<Measurement>> measurements_;
+    std::vector<std::shared_ptr<VirtualChannel>> virtuals_;   // in registration order
+    std::vector<std::size_t> v_out_;                          // scratch of apply_virtuals
+    std::vector<timestamp_t> v_time_;
+    std::vector<std::int8_t> v_channel_;
     std::string error_;
 
     std::mutex qmu_;
